@@ -1,6 +1,18 @@
+use bevy::asset::Assets;
+use bevy::asset::RenderAssetUsages;
+use bevy::image::Image;
+use bevy::render::render_asset::RenderAssets;
 use bevy::render::render_resource::CommandEncoder;
+use bevy::render::render_resource::Extent3d;
+use bevy::render::render_resource::Texture;
+use bevy::render::render_resource::TextureDescriptor;
+use bevy::render::render_resource::TextureDimension;
+use bevy::render::render_resource::TextureFormat;
+use bevy::render::render_resource::TextureUsages;
+use bevy::render::render_resource::TextureViewDescriptor;
 use bevy::render::renderer::RenderDevice;
 use bevy::render::renderer::RenderQueue;
+use bevy::render::texture::GpuImage;
 
 use crate::ocean::OceanSpectrumParameters;
 use crate::ocean::OceanSurface;
@@ -20,7 +32,14 @@ pub struct OceanCascadeParameters {
 }
 
 impl OceanCascade {
-    pub fn new(device: &RenderDevice, size: u32, params: OceanCascadeParameters) -> Self {
+    pub fn new(
+        device: &RenderDevice,
+        size: u32,
+        params: OceanCascadeParameters,
+        displacement_0: &Texture,
+        displacement_1: &Texture,
+        displacement_2: &Texture,
+    ) -> Self {
         let surface_params = OceanSpectrumParameters {
             size: params.size,
             wind_speed: params.wind_speed,
@@ -57,9 +76,9 @@ impl OceanCascade {
             ..surface_params
         };
 
-        let cascade_0 = OceanSurface::new(device, size, params_0);
-        let cascade_1 = OceanSurface::new(device, size, params_1);
-        let cascade_2 = OceanSurface::new(device, size, params_2);
+        let cascade_0 = OceanSurface::new(device, size, params_0, displacement_0);
+        let cascade_1 = OceanSurface::new(device, size, params_1, displacement_1);
+        let cascade_2 = OceanSurface::new(device, size, params_2, displacement_2);
 
         Self {
             cascade_0,
@@ -75,7 +94,7 @@ impl OceanCascade {
     }
 
     pub fn dispatch(
-        &mut self,
+        &self,
         encoder: &mut CommandEncoder,
         queue: &RenderQueue,
         time: f32,

@@ -13,9 +13,6 @@ var buffer_b_0: texture_storage_2d<rgba32float, read_write>;
 @group(0) @binding(4)
 var buffer_b_1: texture_storage_2d<rgba32float, read_write>;
 
-@group(0) @binding(5)
-var output_tex: texture_storage_2d<rgba8unorm, write>;
-
 
 struct Params {
   ping_pong: u32,
@@ -293,22 +290,6 @@ fn vertical_step_inverse_fft(
     }
 }
 
-@compute @workgroup_size(16,16)
-fn visualize_heightmap(
-    @builtin(global_invocation_id) id: vec3<u32>
-) {
-    let val = textureLoad(buffer_b_1, vec2<i32>(id.xy));
-
-    // Print raw values (for visualization purposes, scale a lot)
-    let raw_x = abs(val.x) * 1e3;
-    let raw_y = abs(val.y) * 1e3;
-    let raw_z = abs(val.z) * 1e3;
-    let raw_w = abs(val.w) * 1e3;
-
-    // Use each component as RGB channels
-    textureStore(output_tex, vec2<i32>(id.xy), vec4<f32>(raw_x, raw_y, raw_z, 1.0));
-}
-
 @compute @workgroup_size(16, 16)
 fn permute(
     @builtin(global_invocation_id) id: vec3<u32>,
@@ -362,3 +343,20 @@ fn swap(
         b1,
     );
 }
+
+@compute @workgroup_size(16, 16)
+fn scale(
+    @builtin(global_invocation_id) id: vec3<u32>,
+) {
+    let b0 = textureLoad(
+        buffer_a_0,
+        vec2<i32>(id.xy),
+    );
+
+    textureStore(
+        buffer_a_0,
+        vec2<i32>(id.xy),
+        b0 / f32(params.size) / f32(params.size),
+    );
+}
+

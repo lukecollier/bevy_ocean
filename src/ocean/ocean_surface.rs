@@ -1,7 +1,3 @@
-use bevy::asset::Asset;
-use bevy::asset::AssetServer;
-use bevy::asset::Handle;
-use bevy::ecs::system::Res;
 use bevy::image::Image;
 use bevy::render::render_resource::CommandEncoder;
 use bevy::render::render_resource::Extent3d;
@@ -31,7 +27,6 @@ pub struct OceanSurface {
     amp_dx_dz_texture: Texture,
     amp_dyx_dyz_texture: Texture,
 
-    displacement_texture: Texture,
     derivatives_texture: Texture,
 
     // pipelines
@@ -45,7 +40,12 @@ pub struct OceanSurface {
 impl OceanSurface {
     // todo: We should pass in the displacements here,these are the only two textures that bevy
     // will need to read
-    pub fn new(device: &RenderDevice, size: u32, params: OceanSpectrumParameters) -> OceanSurface {
+    pub fn new(
+        device: &RenderDevice,
+        size: u32,
+        params: OceanSpectrumParameters,
+        displacement_texture: &Texture,
+    ) -> OceanSurface {
         let texture_size = Extent3d {
             width: size,
             height: size,
@@ -107,19 +107,6 @@ impl OceanSurface {
             view_formats: &[TextureFormat::Rgba32Float],
         });
 
-        let displacement_texture = device.create_texture(&TextureDescriptor {
-            label: Some("Displacement"),
-            size: texture_size,
-            mip_level_count: 4,
-            sample_count: 1,
-            dimension: TextureDimension::D2,
-            format: TextureFormat::Rgba32Float,
-            usage: TextureUsages::COPY_SRC
-                | TextureUsages::STORAGE_BINDING
-                | TextureUsages::TEXTURE_BINDING,
-            view_formats: &[TextureFormat::Rgba32Float],
-        });
-
         let derivatives_texture = device.create_texture(&TextureDescriptor {
             label: Some("Derivatives"),
             size: texture_size,
@@ -159,14 +146,14 @@ impl OceanSurface {
             1.2,
             &amp_dx_dz_texture,
             &amp_dyx_dyz_texture,
-            &displacement_texture,
+            displacement_texture,
             &derivatives_texture,
         );
 
         let generate_mipmaps_pipeline = GenerateMipmapsPipeline::init(
             &device,
             size,
-            &displacement_texture,
+            displacement_texture,
             &derivatives_texture,
         );
 
@@ -176,7 +163,6 @@ impl OceanSurface {
             h0_texture,
             amp_dx_dz_texture,
             amp_dyx_dyz_texture,
-            displacement_texture,
             derivatives_texture,
 
             params,
@@ -195,7 +181,7 @@ impl OceanSurface {
     }
 
     pub fn dispatch(
-        &mut self,
+        &self,
         encoder: &mut CommandEncoder,
         queue: &RenderQueue,
         time: f32,
@@ -203,7 +189,6 @@ impl OceanSurface {
     ) {
         if self.parameters_changed {
             self.initial_spectrum_pipeline.dispatch(encoder, queue);
-            self.parameters_changed = false;
         }
 
         self.time_dependent_spectrum_pipeline
@@ -213,11 +198,6 @@ impl OceanSurface {
 
         self.waves_data_merge_pipeline.dispatch(encoder, dt);
         self.generate_mipmaps_pipeline.dispatch(encoder);
-    }
-
-    // todo: These should come from the plugin as a Handle<Image>
-    pub fn displacement_texture(&self) -> &Texture {
-        &self.displacement_texture
     }
 
     pub fn derivatives_texture(&self) -> &Texture {
