@@ -2,6 +2,8 @@
 
 _Yarrrr_
 
+![](public/bevy_ocean_example.gif)
+
 ## Based on
 
 https://github.com/vmanucharyan/wgpu-ocean/tree/592d5047d3eb241f3a516d849928322920fa9765
