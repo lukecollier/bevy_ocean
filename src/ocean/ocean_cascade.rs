@@ -39,6 +39,12 @@ impl OceanCascade {
         displacement_0: &Texture,
         displacement_1: &Texture,
         displacement_2: &Texture,
+        derivatives_0: &Texture,
+        derivatives_1: &Texture,
+        derivatives_2: &Texture,
+        foam_persistence_0: &Texture,
+        foam_persistence_1: &Texture,
+        foam_persistence_2: &Texture,
     ) -> Self {
         let surface_params = OceanSpectrumParameters {
             size: params.size,
@@ -76,9 +82,9 @@ impl OceanCascade {
             ..surface_params
         };
 
-        let cascade_0 = OceanSurface::new(device, size, params_0, displacement_0);
-        let cascade_1 = OceanSurface::new(device, size, params_1, displacement_1);
-        let cascade_2 = OceanSurface::new(device, size, params_2, displacement_2);
+        let cascade_0 = OceanSurface::new(device, size, params_0, displacement_0, derivatives_0, foam_persistence_0);
+        let cascade_1 = OceanSurface::new(device, size, params_1, displacement_1, derivatives_1, foam_persistence_1);
+        let cascade_2 = OceanSurface::new(device, size, params_2, displacement_2, derivatives_2, foam_persistence_2);
 
         Self {
             cascade_0,

@@ -11,6 +11,7 @@ use bevy::render::renderer::RenderQueue;
 
 use crate::ocean::ocean_parameters::OceanSpectrumParameters;
 use crate::ocean::pipelines::FFT;
+use crate::ocean::pipelines::FoamPersistencePipeline;
 use crate::ocean::pipelines::GenerateMipmapsPipeline;
 use crate::ocean::pipelines::InitialSpectrumPipeline;
 use crate::ocean::pipelines::TimeDependentSpectrumPipeline;
@@ -20,31 +21,23 @@ pub struct OceanSurface {
     params: OceanSpectrumParameters,
     parameters_changed: bool,
 
-    h0_texture: Texture,
-    h0k_texture: Texture,
-    waves_data_texture: Texture,
-
-    amp_dx_dz_texture: Texture,
-    amp_dyx_dyz_texture: Texture,
-
-    derivatives_texture: Texture,
-
     // pipelines
     initial_spectrum_pipeline: InitialSpectrumPipeline,
     time_dependent_spectrum_pipeline: TimeDependentSpectrumPipeline,
     fft: FFT,
     waves_data_merge_pipeline: WavesDataMergePipeline,
+    foam_persistence_pipeline: FoamPersistencePipeline,
     generate_mipmaps_pipeline: GenerateMipmapsPipeline,
 }
 
 impl OceanSurface {
-    // todo: We should pass in the displacements here,these are the only two textures that bevy
-    // will need to read
     pub fn new(
         device: &RenderDevice,
         size: u32,
         params: OceanSpectrumParameters,
         displacement_texture: &Texture,
+        derivatives_texture: &Texture,
+        foam_persistence_texture: &Texture,
     ) -> OceanSurface {
         let texture_size = Extent3d {
             width: size,
@@ -107,23 +100,10 @@ impl OceanSurface {
             view_formats: &[TextureFormat::Rgba32Float],
         });
 
-        let derivatives_texture = device.create_texture(&TextureDescriptor {
-            label: Some("Derivatives"),
-            size: texture_size,
-            mip_level_count: 4,
-            sample_count: 1,
-            dimension: TextureDimension::D2,
-            format: TextureFormat::Rgba32Float,
-            usage: TextureUsages::COPY_SRC
-                | TextureUsages::STORAGE_BINDING
-                | TextureUsages::TEXTURE_BINDING,
-            view_formats: &[TextureFormat::Rgba32Float],
-        });
-
         let initial_spectrum_pipeline = InitialSpectrumPipeline::init(
             size,
             params,
-            &device,
+            device,
             &h0k_texture,
             &waves_data_texture,
             &h0_texture,
@@ -131,45 +111,49 @@ impl OceanSurface {
 
         let time_dependent_spectrum_pipeline = TimeDependentSpectrumPipeline::init(
             size,
-            &device,
+            device,
             &h0_texture,
             &waves_data_texture,
             &amp_dx_dz_texture,
             &amp_dyx_dyz_texture,
         );
 
-        let fft = FFT::init(size, &device, &amp_dx_dz_texture, &amp_dyx_dyz_texture);
+        let fft = FFT::init(size, device, &amp_dx_dz_texture, &amp_dyx_dyz_texture);
 
+        // Lambda controls horizontal displacement (choppiness)
+        // Too high causes waves to fold over themselves
+        let lambda = 0.6;
         let waves_data_merge_pipeline = WavesDataMergePipeline::init(
-            &device,
+            device,
             size,
-            1.2,
+            lambda,
             &amp_dx_dz_texture,
             &amp_dyx_dyz_texture,
             displacement_texture,
-            &derivatives_texture,
+            derivatives_texture,
+        );
+
+        let foam_persistence_pipeline = FoamPersistencePipeline::init(
+            device,
+            size,
+            displacement_texture,
+            foam_persistence_texture,
         );
 
         let generate_mipmaps_pipeline = GenerateMipmapsPipeline::init(
-            &device,
+            device,
             size,
             displacement_texture,
-            &derivatives_texture,
+            derivatives_texture,
         );
 
         OceanSurface {
-            h0k_texture,
-            waves_data_texture,
-            h0_texture,
-            amp_dx_dz_texture,
-            amp_dyx_dyz_texture,
-            derivatives_texture,
-
             params,
             initial_spectrum_pipeline,
             time_dependent_spectrum_pipeline,
             fft,
             waves_data_merge_pipeline,
+            foam_persistence_pipeline,
             generate_mipmaps_pipeline,
             parameters_changed: false,
         }
@@ -197,11 +181,8 @@ impl OceanSurface {
         self.fft.dispatch(encoder);
 
         self.waves_data_merge_pipeline.dispatch(encoder, dt);
+        self.foam_persistence_pipeline.dispatch(encoder, dt);
         self.generate_mipmaps_pipeline.dispatch(encoder);
-    }
-
-    pub fn derivatives_texture(&self) -> &Texture {
-        &self.derivatives_texture
     }
 
     pub fn change_parameters(&mut self, parameters: OceanSpectrumParameters) {

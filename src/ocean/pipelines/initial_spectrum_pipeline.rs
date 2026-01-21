@@ -359,14 +359,16 @@ impl InitialSpectrumPipeline {
 
 fn generate_noise_data(size: usize) -> Vec<f32> {
     use rand::prelude::*;
+    use rand_distr::{Distribution, StandardNormal};
 
     let mut rng = rand::rng();
-    let mut buf: Vec<f32> = vec![0 as f32; 4 * size * size];
+    let normal: StandardNormal = StandardNormal;
+    let mut buf: Vec<f32> = vec![0.0; 4 * size * size];
     for i in 0..4 * size * size {
-        buf[i] = rng.random();
+        buf[i] = normal.sample(&mut rng);
     }
 
-    return buf;
+    buf
 }
 
 fn compute_work_group_count(
