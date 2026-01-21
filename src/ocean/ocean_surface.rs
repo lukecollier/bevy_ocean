@@ -1,4 +1,3 @@
-use bevy::image::Image;
 use bevy::render::render_resource::CommandEncoder;
 use bevy::render::render_resource::Extent3d;
 use bevy::render::render_resource::Texture;
@@ -120,13 +119,10 @@ impl OceanSurface {
 
         let fft = FFT::init(size, device, &amp_dx_dz_texture, &amp_dyx_dyz_texture);
 
-        // Lambda controls horizontal displacement (choppiness)
-        // Too high causes waves to fold over themselves
-        let lambda = 0.6;
         let waves_data_merge_pipeline = WavesDataMergePipeline::init(
             device,
             size,
-            lambda,
+            params.delta,
             &amp_dx_dz_texture,
             &amp_dyx_dyz_texture,
             displacement_texture,
@@ -140,12 +136,8 @@ impl OceanSurface {
             foam_persistence_texture,
         );
 
-        let generate_mipmaps_pipeline = GenerateMipmapsPipeline::init(
-            device,
-            size,
-            displacement_texture,
-            derivatives_texture,
-        );
+        let generate_mipmaps_pipeline =
+            GenerateMipmapsPipeline::init(device, size, displacement_texture, derivatives_texture);
 
         OceanSurface {
             params,
@@ -176,7 +168,7 @@ impl OceanSurface {
         }
 
         self.time_dependent_spectrum_pipeline
-            .dispatch(encoder, time + 10000.0);
+            .dispatch(encoder, time);
 
         self.fft.dispatch(encoder);
 

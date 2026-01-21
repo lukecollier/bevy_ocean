@@ -14,10 +14,7 @@ use bevy::{
     },
     shader::ShaderRef,
 };
-use bevy_rand::{global::GlobalRng, prelude::WyRand};
-use bytemuck::{Pod, Zeroable};
 use rand::prelude::*;
-use std::borrow::Cow;
 
 use crate::ocean::{OceanCascade, OceanCascadeParameters};
 
@@ -51,8 +48,8 @@ pub struct OceanParams {
 impl Default for OceanParams {
     fn default() -> Self {
         Self {
-            displacement_scale: 0.6,
-            normal_strength: 0.8,
+            displacement_scale: 1.0,
+            normal_strength: 0.3,
             foam_threshold: 1.0,
             foam_multiplier: 2.0,
             foam_tile_scale: 8.0,
@@ -123,11 +120,6 @@ struct OceanImages {
     foam_persistence_0: Handle<Image>,
     foam_persistence_1: Handle<Image>,
     foam_persistence_2: Handle<Image>,
-}
-
-impl OceanImages {
-    // todo: Draw our displacement map to the UI
-    fn debug(assets: Res<Assets<Image>>, images: Res<OceanImages>) {}
 }
 
 struct OceanNode {
@@ -202,6 +194,10 @@ impl Plugin for OceanPlugin {
         // Sync ocean params to materials every frame
         app.add_systems(Update, sync_ocean_params);
 
+        // app.add_plugins(MeshletPlugin {
+        //     cluster_buffer_slots: 1 << 14,
+        // });
+
         app.add_plugins(MaterialPlugin::<OceanMaterial>::default());
 
         app.add_plugins((ExtractResourcePlugin::<OceanImages>::default(),));
@@ -237,9 +233,6 @@ struct OceanPipelineInit {
 #[derive(Debug, Hash, PartialEq, Eq, Clone, RenderLabel)]
 struct OceanLabel;
 
-#[derive(Component)]
-struct DebugMesh;
-
 /// Marker component for ocean surface entities
 #[derive(Component)]
 pub struct OceanSurface;
@@ -257,7 +250,7 @@ fn spawn_debug_textures(
         Plane3d::default()
             .mesh()
             .size(64.0, 64.0)
-            .subdivisions(256 * 6),
+            .subdivisions(64 * 4),
     );
 
     // Load foam texture
@@ -278,7 +271,7 @@ fn spawn_debug_textures(
             t_displacement_2: ocean_images.displacement_2.clone(),
             t_derivatives_2: ocean_images.derivatives_2.clone(),
             // Foam texture
-            t_foam: foam_texture,
+            t_foam: foam_texture.clone(),
             // Ocean parameters
             params: *ocean_params,
             // Foam persistence textures
@@ -288,18 +281,6 @@ fn spawn_debug_textures(
         })),
         Transform::from_translation(Vec3::new(0.0, 0.0, 0.0)),
         OceanSurface,
-    ));
-
-    // Note: bevy_flycam spawns a camera, so we don't need to spawn one here
-
-    // Add a directional light
-    commands.spawn((
-        DirectionalLight {
-            illuminance: 10000.0,
-            shadows_enabled: true,
-            ..default()
-        },
-        Transform::from_rotation(Quat::from_euler(EulerRot::XYZ, -0.5, 0.5, 0.0)),
     ));
 }
 
