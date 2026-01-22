@@ -103,7 +103,7 @@ impl MergeCascadesPipeline {
             device.create_shader_module(ShaderModuleDescriptor {
                 label: Some("Merge cascades shader"),
                 source: ShaderSource::Wgsl(
-                    include_str!("../../../assets/shaders/waves_data_merge.wgsl").into(),
+                    include_str!("../../shaders/waves_data_merge.wgsl").into(),
                 ),
             })
         };

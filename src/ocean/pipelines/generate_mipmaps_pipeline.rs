@@ -129,7 +129,7 @@ impl GenerateMipmapsPipeline {
             device.create_shader_module(ShaderModuleDescriptor {
                 label: Some("Generate mipmaps shader"),
                 source: ShaderSource::Wgsl(
-                    include_str!("../../../assets/shaders/generate_mipmaps.wgsl").into(),
+                    include_str!("../../shaders/generate_mipmaps.wgsl").into(),
                 ),
             })
         };

@@ -118,6 +118,6 @@ impl OceanCascade {
     ) {
         self.cascade_0.dispatch(encoder, queue, time, dt);
         self.cascade_1.dispatch(encoder, queue, time, dt);
-        // self.cascade_2.dispatch(encoder, queue, time, dt);
+        self.cascade_2.dispatch(encoder, queue, time, dt);
     }
 }

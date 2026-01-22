@@ -197,6 +197,23 @@ fn fresnel_schlick(cos_theta: f32, f0: vec3<f32>) -> vec3<f32> {
     return f0 + (1.0 - f0) * pow(saturate(1.0 - cos_theta), 5.0);
 }
 
+// Compute geometric roughness from normal variation across the pixel
+// This prevents specular aliasing at close range
+fn compute_geometric_roughness(normal: vec3<f32>, base_roughness: f32) -> f32 {
+    // Screen-space derivatives of the normal
+    let dndu = dpdx(normal);
+    let dndv = dpdy(normal);
+
+    // Variance approximation - how much the normal changes across this pixel
+    let variance = dot(dndu, dndu) + dot(dndv, dndv);
+
+    // Add variance to roughness squared, then sqrt back
+    // This blurs specular where normals vary rapidly (close-up detail)
+    let adjusted_roughness = sqrt(base_roughness * base_roughness + variance);
+
+    return saturate(adjusted_roughness);
+}
+
 @fragment
 fn fragment(mesh: OceanVertexOutput) -> @location(0) vec4<f32> {
     let normal = normalize(mesh.world_normal);
@@ -210,7 +227,8 @@ fn fragment(mesh: OceanVertexOutput) -> @location(0) vec4<f32> {
     let half_vec = normalize(light_dir + view_dir);
 
     // PBR parameters for water (using uniform)
-    let roughness = params.roughness;
+    // Geometric roughness prevents specular aliasing at close range
+    let roughness = compute_geometric_roughness(normal, params.roughness);
     let f0 = vec3<f32>(0.02);  // Water's base reflectivity (IOR ~1.33)
 
     // Calculate PBR terms
@@ -257,8 +275,11 @@ fn fragment(mesh: OceanVertexOutput) -> @location(0) vec4<f32> {
     ocean_color = ocean_color + sss_color * sss;
 
     // Add sky reflection based on PBR fresnel
+    // Reduce (but don't eliminate) reflection at close range to preserve surface detail
+    let view_dist = length(camera_pos - mesh.world_position.xyz);
+    let reflection_dist_fade = mix(0.3, 1.0, saturate(view_dist / 150.0));
     let reflection_strength = env_fresnel.r;  // Use scalar from fresnel
-    ocean_color = mix(ocean_color, sky_color, reflection_strength * 0.5);
+    ocean_color = mix(ocean_color, sky_color, reflection_strength * 0.5 * reflection_dist_fade);
 
     // Add PBR sun specular highlight (using uniform light intensity)
     ocean_color = ocean_color + sun_color * specular * params.light_intensity * ndotl;

@@ -17,7 +17,9 @@ use bevy::{
 use bevy_flycam::{FlyCam, PlayerPlugin};
 use bevy_rand::{plugin::EntropyPlugin, prelude::WyRand};
 
-use bevy_ocean::ocean_plugin::{OceanParams, OceanPlugin};
+use bevy_ocean::ocean_plugin::{
+    OceanImages, OceanMaterial, OceanParams, OceanPlugin, OceanSurface, setup,
+};
 
 #[derive(Resource, Default)]
 struct LoadingSkybox {
@@ -34,7 +36,8 @@ fn main() -> AppExit {
         .insert_resource(UiTheme(create_dark_theme()))
         .add_plugins(FeathersPlugins)
         .add_systems(Startup, startup_skybox)
-        // .add_systems(Startup, (startup_ui))
+        .add_systems(Startup, spawn_debug_textures.after(setup))
+        .add_systems(Startup, (startup_ui))
         .add_systems(Update, update_skybox)
         .run()
 }
@@ -42,8 +45,54 @@ fn main() -> AppExit {
 fn startup_skybox(mut commands: Commands, asset_server: Res<AssetServer>) {
     commands.insert_resource(LoadingSkybox {
         loading: true,
-        cubemap: asset_server.load("textures/sky.png"),
+        cubemap: asset_server.load("sky.png"),
     });
+}
+fn spawn_debug_textures(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<OceanMaterial>>,
+    ocean_images: Res<OceanImages>,
+    ocean_params: Res<OceanParams>,
+    asset_server: Res<AssetServer>,
+) {
+    // Create a large plane mesh for the ocean
+    let ocean_mesh = Mesh::from(
+        Plane3d::default()
+            .mesh()
+            .size(1024.0, 1024.0)
+            .subdivisions(2048),
+    );
+
+    // Load foam texture
+    let foam_texture: Handle<Image> = asset_server.load("embedded://bevy_ocean/textures/foam.png");
+
+    // Spawn the ocean entity with the OceanMaterial
+    // Using all 3 cascades for multi-scale wave detail
+    commands.spawn((
+        Mesh3d(meshes.add(ocean_mesh)),
+        MeshMaterial3d(materials.add(OceanMaterial {
+            // Cascade 0 - large scale (500m)
+            t_displacement_0: ocean_images.displacement_0.clone(),
+            t_derivatives_0: ocean_images.derivatives_0.clone(),
+            // Cascade 1 - medium scale (85m)
+            t_displacement_1: ocean_images.displacement_1.clone(),
+            t_derivatives_1: ocean_images.derivatives_1.clone(),
+            // Cascade 2 - small scale (10m)
+            t_displacement_2: ocean_images.displacement_2.clone(),
+            t_derivatives_2: ocean_images.derivatives_2.clone(),
+            // Foam texture
+            t_foam: foam_texture.clone(),
+            // Ocean parameters
+            params: *ocean_params,
+            // Foam persistence textures
+            t_foam_persistence_0: ocean_images.foam_persistence_0.clone(),
+            t_foam_persistence_1: ocean_images.foam_persistence_1.clone(),
+            t_foam_persistence_2: ocean_images.foam_persistence_2.clone(),
+        })),
+        Transform::from_translation(Vec3::new(0.0, 0.0, 0.0)),
+        OceanSurface,
+    ));
 }
 
 fn update_skybox(

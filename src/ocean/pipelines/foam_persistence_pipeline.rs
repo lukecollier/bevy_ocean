@@ -72,7 +72,7 @@ impl FoamPersistencePipeline {
             device.create_shader_module(ShaderModuleDescriptor {
                 label: Some("Foam persistence shader"),
                 source: ShaderSource::Wgsl(
-                    include_str!("../../../assets/shaders/foam_persistence.wgsl").into(),
+                    include_str!("../../shaders/foam_persistence.wgsl").into(),
                 ),
             })
         };

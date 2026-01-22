@@ -126,7 +126,7 @@ impl TimeDependentSpectrumPipeline {
             device.create_shader_module(ShaderModuleDescriptor {
                 label: Some("Time-dependent spectrum shader"),
                 source: ShaderSource::Wgsl(
-                    include_str!("../../../assets/shaders/time_dependent_spectrum.wgsl").into(),
+                    include_str!("../../shaders/time_dependent_spectrum.wgsl").into(),
                 ),
             })
         };

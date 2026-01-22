@@ -41,7 +41,7 @@ impl FFT {
         let shader = unsafe {
             device.create_shader_module(ShaderModuleDescriptor {
                 label: Some("FFT shader"),
-                source: ShaderSource::Wgsl(include_str!("../../../assets/shaders/fft.wgsl").into()),
+                source: ShaderSource::Wgsl(include_str!("../../shaders/fft.wgsl").into()),
             })
         };
 

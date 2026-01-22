@@ -217,7 +217,7 @@ impl InitialSpectrumPipeline {
             device.create_shader_module(ShaderModuleDescriptor {
                 label: Some("Initial spectrum shader"),
                 source: ShaderSource::Wgsl(
-                    include_str!("../../../assets/shaders/initial_spectrum.wgsl").into(),
+                    include_str!("../../shaders/initial_spectrum.wgsl").into(),
                 ),
             })
         };

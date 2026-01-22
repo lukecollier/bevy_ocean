@@ -1,5 +1,5 @@
 use bevy::{
-    asset::RenderAssetUsages,
+    asset::{RenderAssetUsages, embedded_asset},
     ecs::schedule::common_conditions::{not, resource_exists},
     image::{ImageAddressMode, ImageFilterMode, ImageSampler, ImageSamplerDescriptor},
     prelude::*,
@@ -18,7 +18,7 @@ use rand::prelude::*;
 
 use crate::ocean::{OceanCascade, OceanCascadeParameters};
 
-const OCEAN_SHADER_PATH: &str = "shaders/ocean_shader.wgsl";
+const OCEAN_SHADER_PATH: &str = "embedded://bevy_ocean/shaders/ocean_shader.wgsl";
 const SIZE: u32 = 256;
 
 pub struct OceanPlugin;
@@ -66,7 +66,7 @@ impl Default for OceanParams {
 /// - Cascade 1: 85m scale (medium waves)
 /// - Cascade 2: 10m scale (small details/ripples)
 #[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
-struct OceanMaterial {
+pub struct OceanMaterial {
     // Cascade 0 - large scale (500m)
     #[texture(0)]
     #[sampler(6)]
@@ -110,16 +110,16 @@ impl Material for OceanMaterial {
 }
 
 #[derive(Resource, Clone, ExtractResource)]
-struct OceanImages {
-    displacement_0: Handle<Image>,
-    displacement_1: Handle<Image>,
-    displacement_2: Handle<Image>,
-    derivatives_0: Handle<Image>,
-    derivatives_1: Handle<Image>,
-    derivatives_2: Handle<Image>,
-    foam_persistence_0: Handle<Image>,
-    foam_persistence_1: Handle<Image>,
-    foam_persistence_2: Handle<Image>,
+pub struct OceanImages {
+    pub displacement_0: Handle<Image>,
+    pub displacement_1: Handle<Image>,
+    pub displacement_2: Handle<Image>,
+    pub derivatives_0: Handle<Image>,
+    pub derivatives_1: Handle<Image>,
+    pub derivatives_2: Handle<Image>,
+    pub foam_persistence_0: Handle<Image>,
+    pub foam_persistence_1: Handle<Image>,
+    pub foam_persistence_2: Handle<Image>,
 }
 
 struct OceanNode {
@@ -186,17 +186,16 @@ impl render_graph::Node for OceanNode {
 
 impl Plugin for OceanPlugin {
     fn build(&self, app: &mut App) {
+        let strip_prefix = "src/";
+        embedded_asset!(app, strip_prefix, "./shaders/ocean_shader.wgsl");
+        embedded_asset!(app, strip_prefix, "./textures/foam.png");
         // Insert default ocean parameters resource
         app.init_resource::<OceanParams>();
 
-        app.add_systems(Startup, (setup, spawn_debug_textures).chain());
+        app.add_systems(Startup, setup);
 
         // Sync ocean params to materials every frame
         app.add_systems(Update, sync_ocean_params);
-
-        // app.add_plugins(MeshletPlugin {
-        //     cluster_buffer_slots: 1 << 14,
-        // });
 
         app.add_plugins(MaterialPlugin::<OceanMaterial>::default());
 
@@ -232,54 +231,6 @@ struct OceanLabel;
 #[derive(Component)]
 pub struct OceanSurface;
 
-fn spawn_debug_textures(
-    mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<OceanMaterial>>,
-    ocean_images: Res<OceanImages>,
-    ocean_params: Res<OceanParams>,
-    asset_server: Res<AssetServer>,
-) {
-    // Create a large plane mesh for the ocean
-    let ocean_mesh = Mesh::from(
-        Plane3d::default()
-            .mesh()
-            .size(1024.0, 1024.0)
-            // this being 4x
-            .subdivisions(512 * 8),
-    );
-
-    // Load foam texture
-    let foam_texture: Handle<Image> = asset_server.load("textures/foam.png");
-
-    // Spawn the ocean entity with the OceanMaterial
-    // Using all 3 cascades for multi-scale wave detail
-    commands.spawn((
-        Mesh3d(meshes.add(ocean_mesh)),
-        MeshMaterial3d(materials.add(OceanMaterial {
-            // Cascade 0 - large scale (500m)
-            t_displacement_0: ocean_images.displacement_0.clone(),
-            t_derivatives_0: ocean_images.derivatives_0.clone(),
-            // Cascade 1 - medium scale (85m)
-            t_displacement_1: ocean_images.displacement_1.clone(),
-            t_derivatives_1: ocean_images.derivatives_1.clone(),
-            // Cascade 2 - small scale (10m)
-            t_displacement_2: ocean_images.displacement_2.clone(),
-            t_derivatives_2: ocean_images.derivatives_2.clone(),
-            // Foam texture
-            t_foam: foam_texture.clone(),
-            // Ocean parameters
-            params: *ocean_params,
-            // Foam persistence textures
-            t_foam_persistence_0: ocean_images.foam_persistence_0.clone(),
-            t_foam_persistence_1: ocean_images.foam_persistence_1.clone(),
-            t_foam_persistence_2: ocean_images.foam_persistence_2.clone(),
-        })),
-        Transform::from_translation(Vec3::new(0.0, 0.0, 0.0)),
-        OceanSurface,
-    ));
-}
-
 /// System to sync OceanParams resource to all ocean materials
 fn sync_ocean_params(
     ocean_params: Res<OceanParams>,
@@ -306,7 +257,7 @@ pub fn generate_noise_data<R: Rng + ?Sized>(rng: &mut R, size: usize) -> Vec<f32
     return buf;
 }
 
-fn setup(mut commands: Commands, mut image_assets: ResMut<Assets<Image>>) {
+pub fn setup(mut commands: Commands, mut image_assets: ResMut<Assets<Image>>) {
     let texture_size = Extent3d {
         width: SIZE,
         height: SIZE,
@@ -409,7 +360,7 @@ fn init_ocean_pipeline(
     mut commands: Commands,
     render_device: Res<RenderDevice>,
     // todo: We should use the cache and the bevy things I GUESS
-    _pipeline_cache: Res<PipelineCache>,
+    pipeline_cache: Res<PipelineCache>,
     ocean_images: Option<Res<OceanImages>>,
     render_assets: Res<RenderAssets<GpuImage>>,
 ) {

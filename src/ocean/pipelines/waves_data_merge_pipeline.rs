@@ -97,7 +97,7 @@ impl WavesDataMergePipeline {
             device.create_shader_module(ShaderModuleDescriptor {
                 label: Some("Waves data merge shader"),
                 source: ShaderSource::Wgsl(
-                    include_str!("../../../assets/shaders/waves_data_merge.wgsl").into(),
+                    include_str!("../../shaders/waves_data_merge.wgsl").into(),
                 ),
             })
         };
