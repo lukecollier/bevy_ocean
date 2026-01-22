@@ -1,4 +1,6 @@
+use bevy::core_pipeline::Skybox;
 use bevy::prelude::*;
+use bevy::render::render_resource::{TextureViewDescriptor, TextureViewDimension};
 use bevy::ui_widgets::{SliderPrecision, SliderStep, observe, slider_self_update};
 use bevy::{
     feathers::{
@@ -9,12 +11,19 @@ use bevy::{
         theme::{ThemeBackgroundColor, ThemedText, UiTheme},
         tokens,
     },
+    prelude::*,
     ui_widgets::ValueChange,
 };
-use bevy_flycam::PlayerPlugin;
+use bevy_flycam::{FlyCam, PlayerPlugin};
 use bevy_rand::{plugin::EntropyPlugin, prelude::WyRand};
 
 use bevy_ocean::ocean_plugin::{OceanParams, OceanPlugin};
+
+#[derive(Resource, Default)]
+struct LoadingSkybox {
+    loading: bool,
+    cubemap: Handle<Image>,
+}
 
 fn main() -> AppExit {
     App::new()
@@ -24,8 +33,42 @@ fn main() -> AppExit {
         .add_plugins(OceanPlugin)
         .insert_resource(UiTheme(create_dark_theme()))
         .add_plugins(FeathersPlugins)
-        .add_systems(Startup, startup_ui)
+        .add_systems(Startup, startup_skybox)
+        // .add_systems(Startup, (startup_ui))
+        .add_systems(Update, update_skybox)
         .run()
+}
+
+fn startup_skybox(mut commands: Commands, asset_server: Res<AssetServer>) {
+    commands.insert_resource(LoadingSkybox {
+        loading: true,
+        cubemap: asset_server.load("textures/sky.png"),
+    });
+}
+
+fn update_skybox(
+    mut commands: Commands,
+    asset_server: Res<AssetServer>,
+    mut loading_skybox: ResMut<LoadingSkybox>,
+    camera_q: Single<Entity, With<FlyCam>>,
+    mut images: ResMut<Assets<Image>>,
+) {
+    if !asset_server.is_loaded(&loading_skybox.cubemap) || loading_skybox.loading == false {
+        return;
+    }
+    loading_skybox.loading = false;
+    let image = images.get_mut(&loading_skybox.cubemap).unwrap();
+    image.reinterpret_stacked_2d_as_array(6);
+    image.texture_view_descriptor = Some(TextureViewDescriptor {
+        dimension: Some(TextureViewDimension::Cube),
+        ..default()
+    });
+
+    commands.entity(camera_q.into_inner()).insert(Skybox {
+        image: loading_skybox.cubemap.clone(),
+        brightness: 1000.,
+        ..Default::default()
+    });
 }
 
 fn startup_ui(mut commands: Commands, params: ResMut<OceanParams>) {

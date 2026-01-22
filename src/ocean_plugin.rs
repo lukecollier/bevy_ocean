@@ -55,7 +55,7 @@ impl Default for OceanParams {
             foam_tile_scale: 8.0,
             roughness: 0.05,
             light_intensity: 3.0,
-            sss_intensity: 0.4,
+            sss_intensity: 1.0,
         }
     }
 }
@@ -225,11 +225,6 @@ struct OceanPipeline {
     ocean_surface: OceanCascade,
 }
 
-#[derive(Resource)]
-struct OceanPipelineInit {
-    init: bool,
-}
-
 #[derive(Debug, Hash, PartialEq, Eq, Clone, RenderLabel)]
 struct OceanLabel;
 
@@ -249,8 +244,9 @@ fn spawn_debug_textures(
     let ocean_mesh = Mesh::from(
         Plane3d::default()
             .mesh()
-            .size(64.0, 64.0)
-            .subdivisions(64 * 4),
+            .size(1024.0, 1024.0)
+            // this being 4x
+            .subdivisions(512 * 8),
     );
 
     // Load foam texture

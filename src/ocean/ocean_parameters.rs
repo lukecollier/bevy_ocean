@@ -21,7 +21,7 @@ pub struct OceanSpectrumParameters {
 impl Default for OceanSpectrumParameters {
     fn default() -> OceanSpectrumParameters {
         OceanSpectrumParameters {
-            size: 256u32,
+            size: 1024u32,
             length_scale: 150.0,
             cut_off_low: 0.0001,
             cut_off_high: 9999.0,

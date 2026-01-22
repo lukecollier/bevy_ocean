@@ -1,18 +1,7 @@
-use bevy::asset::Assets;
-use bevy::asset::RenderAssetUsages;
-use bevy::image::Image;
-use bevy::render::render_asset::RenderAssets;
 use bevy::render::render_resource::CommandEncoder;
-use bevy::render::render_resource::Extent3d;
 use bevy::render::render_resource::Texture;
-use bevy::render::render_resource::TextureDescriptor;
-use bevy::render::render_resource::TextureDimension;
-use bevy::render::render_resource::TextureFormat;
-use bevy::render::render_resource::TextureUsages;
-use bevy::render::render_resource::TextureViewDescriptor;
 use bevy::render::renderer::RenderDevice;
 use bevy::render::renderer::RenderQueue;
-use bevy::render::texture::GpuImage;
 
 use crate::ocean::OceanSpectrumParameters;
 use crate::ocean::OceanSurface;
@@ -82,9 +71,30 @@ impl OceanCascade {
             ..surface_params
         };
 
-        let cascade_0 = OceanSurface::new(device, size, params_0, displacement_0, derivatives_0, foam_persistence_0);
-        let cascade_1 = OceanSurface::new(device, size, params_1, displacement_1, derivatives_1, foam_persistence_1);
-        let cascade_2 = OceanSurface::new(device, size, params_2, displacement_2, derivatives_2, foam_persistence_2);
+        let cascade_0 = OceanSurface::new(
+            device,
+            size,
+            params_0,
+            displacement_0,
+            derivatives_0,
+            foam_persistence_0,
+        );
+        let cascade_1 = OceanSurface::new(
+            device,
+            size,
+            params_1,
+            displacement_1,
+            derivatives_1,
+            foam_persistence_1,
+        );
+        let cascade_2 = OceanSurface::new(
+            device,
+            size,
+            params_2,
+            displacement_2,
+            derivatives_2,
+            foam_persistence_2,
+        );
 
         Self {
             cascade_0,
@@ -108,6 +118,6 @@ impl OceanCascade {
     ) {
         self.cascade_0.dispatch(encoder, queue, time, dt);
         self.cascade_1.dispatch(encoder, queue, time, dt);
-        self.cascade_2.dispatch(encoder, queue, time, dt);
+        // self.cascade_2.dispatch(encoder, queue, time, dt);
     }
 }
