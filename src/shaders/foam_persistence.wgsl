@@ -2,10 +2,10 @@
 // Updates foam texture with exponential decay while accumulating new foam from Jacobian
 
 @group(0) @binding(0)
-var displacement_texture: texture_storage_2d<rgba32float, read>;
+var displacement_texture: texture_storage_2d_array<rgba32float, read>;
 
 @group(0) @binding(1)
-var foam_persistence: texture_storage_2d<r32float, read_write>;
+var foam_persistence: texture_storage_2d_array<r32float, read_write>;
 
 struct Parameters {
     decay_rate: f32,  // How quickly foam fades (e.g., 0.95 = slow decay, 0.8 = fast decay)
@@ -21,12 +21,13 @@ fn update_foam(
     @builtin(global_invocation_id) id: vec3<u32>,
 ) {
     let coords = vec2<i32>(id.xy);
+    let layer = id.z;
 
     // Read current Jacobian from displacement texture (stored in .w component)
-    let jacobian = textureLoad(displacement_texture, coords).w;
+    let jacobian = textureLoad(displacement_texture, coords, layer).w;
 
     // Read previous foam value
-    let prev_foam = textureLoad(foam_persistence, coords).r;
+    let prev_foam = textureLoad(foam_persistence, coords, layer).r;
 
     // Calculate foam from current Jacobian
     // Negative Jacobian indicates wave compression/folding where foam forms
@@ -41,5 +42,5 @@ fn update_foam(
     // This ensures foam persists and doesn't immediately disappear
     let new_foam = max(decayed_foam, jacobian_foam);
 
-    textureStore(foam_persistence, coords, vec4<f32>(new_foam, 0.0, 0.0, 1.0));
+    textureStore(foam_persistence, coords, layer, vec4<f32>(new_foam, 0.0, 0.0, 1.0));
 }

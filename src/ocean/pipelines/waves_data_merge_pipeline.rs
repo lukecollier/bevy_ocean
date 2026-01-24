@@ -22,6 +22,7 @@ pub struct WavesDataMergePipeline {
     textures_bind_group: BindGroup,
     pipeline: ComputePipeline,
     blur_turbulence_pipeline: ComputePipeline,
+    layers: u32,
 }
 
 impl WavesDataMergePipeline {
@@ -64,7 +65,7 @@ impl WavesDataMergePipeline {
                     binding: 2,
                     visibility: ShaderStages::COMPUTE,
                     ty: BindingType::StorageTexture {
-                        view_dimension: TextureViewDimension::D2,
+                        view_dimension: TextureViewDimension::D2Array,
                         format: TextureFormat::Rgba32Float,
                         access: StorageTextureAccess::ReadWrite,
                     },
@@ -75,7 +76,7 @@ impl WavesDataMergePipeline {
                     binding: 3,
                     visibility: ShaderStages::COMPUTE,
                     ty: BindingType::StorageTexture {
-                        view_dimension: TextureViewDimension::D2,
+                        view_dimension: TextureViewDimension::D2Array,
                         format: TextureFormat::Rgba32Float,
                         access: StorageTextureAccess::WriteOnly,
                     },
@@ -170,6 +171,7 @@ impl WavesDataMergePipeline {
             textures_bind_group,
             pipeline,
             blur_turbulence_pipeline,
+            layers: displacement_texture.depth_or_array_layers(),
         }
     }
 
@@ -187,6 +189,6 @@ impl WavesDataMergePipeline {
         compute_pass.set_pipeline(&self.pipeline);
         compute_pass.set_bind_group(0, &self.textures_bind_group, &[]);
         compute_pass.set_push_constants(0, bytemuck::cast_slice(&[parameters]));
-        compute_pass.dispatch_workgroups(self.size / 16, self.size / 16, 1);
+        compute_pass.dispatch_workgroups(self.size / 16, self.size / 16, self.layers);
     }
 }

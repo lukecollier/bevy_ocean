@@ -1,5 +1,5 @@
 @group(0) @binding(0)
-var t_displacement: texture_storage_2d<rgba32float, read>;
+var t_displacement: texture_storage_2d_array<rgba32float, read>;
 
 @group(0) @binding(1)
 var t_displacement_1: texture_storage_2d<rgba32float, write>;
@@ -27,7 +27,8 @@ fn main(
     @builtin(global_invocation_id) id: vec3<u32>,
 ) {
     let coords = vec2<i32>(id.xy);
-    let displacement = textureLoad(t_displacement, coords);
+    let layer = vec2<i32>(id.z);
+    let displacement = textureLoad(t_displacement, coords, layer);
 
     textureStore(
         t_displacement_1,

@@ -26,7 +26,7 @@ pub struct OceanSurface {
     fft: FFT,
     waves_data_merge_pipeline: WavesDataMergePipeline,
     foam_persistence_pipeline: FoamPersistencePipeline,
-    generate_mipmaps_pipeline: GenerateMipmapsPipeline,
+    // generate_mipmaps_pipeline: GenerateMipmapsPipeline,
 }
 
 impl OceanSurface {
@@ -34,6 +34,7 @@ impl OceanSurface {
         device: &RenderDevice,
         size: u32,
         params: OceanSpectrumParameters,
+        // these 3 are actually going to be texture arrays
         displacement_texture: &Texture,
         derivatives_texture: &Texture,
         foam_persistence_texture: &Texture,
@@ -135,8 +136,8 @@ impl OceanSurface {
             foam_persistence_texture,
         );
 
-        let generate_mipmaps_pipeline =
-            GenerateMipmapsPipeline::init(device, size, displacement_texture, derivatives_texture);
+        // let generate_mipmaps_pipeline =
+        //     GenerateMipmapsPipeline::init(device, size, displacement_texture, derivatives_texture);
 
         OceanSurface {
             params,
@@ -145,7 +146,7 @@ impl OceanSurface {
             fft,
             waves_data_merge_pipeline,
             foam_persistence_pipeline,
-            generate_mipmaps_pipeline,
+            // generate_mipmaps_pipeline,
             parameters_changed: false,
         }
     }
@@ -173,7 +174,7 @@ impl OceanSurface {
 
         self.waves_data_merge_pipeline.dispatch(encoder, dt);
         self.foam_persistence_pipeline.dispatch(encoder, dt);
-        self.generate_mipmaps_pipeline.dispatch(encoder);
+        // self.generate_mipmaps_pipeline.dispatch(encoder);
     }
 
     pub fn change_parameters(&mut self, parameters: OceanSpectrumParameters) {

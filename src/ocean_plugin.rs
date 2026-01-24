@@ -13,14 +13,18 @@ use bevy::{
         renderer::{RenderContext, RenderDevice, RenderQueue},
         texture::GpuImage,
     },
-    shader::ShaderRef,
+    shader::{ShaderDefVal, ShaderRef},
 };
 use rand::prelude::*;
 
-use crate::colors::{fog, ocean, sky, sun};
 use crate::ocean::{OceanCascade, OceanCascadeParameters};
+use crate::{
+    colors::{fog, ocean, sky, sun},
+    ocean::OceanCascadeData,
+};
 
 const OCEAN_SHADER_PATH: &str = "embedded://bevy_ocean/shaders/ocean_shader.wgsl";
+const NUMBER_OF_CASCADES: u32 = 3;
 
 #[derive(Clone, Copy)]
 pub enum Quality {
@@ -71,6 +75,8 @@ impl OceanPlugin {
 
 #[derive(Resource, ExtractResource, Clone)]
 pub struct OceanSettings {
+    /// Layers
+    pub number_of_cascades: u32,
     pub quality: Quality,
     /// Wind speed in m/s - controls wave energy (default 10.0)
     pub wind_speed: f32,
@@ -130,9 +136,39 @@ pub struct OceanParams {
     pub foam_color: Vec3,
     /// Ambient light color
     pub ambient_color: Vec3,
+    pub _padding: f32, // Or more if needed
+    pub cascades: [CascadeParams; 8],
+    pub cascade_count: u32,
 }
 
 impl OceanParams {
+    pub fn default_cascade() -> [CascadeParams; 8] {
+        [
+            CascadeParams {
+                length_scale: 500.,
+                jacobian_strength: 0.6,
+                lod_cutoff: 5000.,
+                foam_strength: 0.6,
+            },
+            CascadeParams {
+                length_scale: 85.,
+                jacobian_strength: 0.17,
+                lod_cutoff: 1000.,
+                foam_strength: 0.25,
+            },
+            CascadeParams {
+                length_scale: 10.,
+                jacobian_strength: 0.23,
+                lod_cutoff: 200.,
+                foam_strength: 0.16,
+            },
+            CascadeParams::default(),
+            CascadeParams::default(),
+            CascadeParams::default(),
+            CascadeParams::default(),
+            CascadeParams::default(),
+        ]
+    }
     pub fn calm() -> Self {
         Self {
             displacement_scale: 1.0,
@@ -155,12 +191,38 @@ impl OceanParams {
             sss_color: ocean::SSS,
             foam_color: ocean::FOAM,
             ambient_color: ocean::AMBIENT,
+            ..Default::default()
         }
     }
 }
 
 impl Default for OceanParams {
     fn default() -> Self {
+        let cascade_params = [
+            CascadeParams {
+                length_scale: 500.,
+                jacobian_strength: 0.6,
+                lod_cutoff: 0.,
+                foam_strength: 0.6,
+            },
+            CascadeParams {
+                length_scale: 85.,
+                jacobian_strength: 0.17,
+                lod_cutoff: 2000.,
+                foam_strength: 0.25,
+            },
+            CascadeParams {
+                length_scale: 10.,
+                jacobian_strength: 0.23,
+                lod_cutoff: 300.,
+                foam_strength: 0.16,
+            },
+            CascadeParams::default(),
+            CascadeParams::default(),
+            CascadeParams::default(),
+            CascadeParams::default(),
+            CascadeParams::default(),
+        ];
         Self {
             displacement_scale: 1.0,
             normal_strength: 0.3,
@@ -182,8 +244,19 @@ impl Default for OceanParams {
             sss_color: ocean::SSS,
             foam_color: ocean::FOAM,
             ambient_color: ocean::AMBIENT,
+            cascades: cascade_params,
+            cascade_count: cascade_params.len() as u32,
+            _padding: 0.,
         }
     }
+}
+
+#[derive(ShaderType, Clone, Copy, Default, Debug)]
+pub struct CascadeParams {
+    pub length_scale: f32,
+    pub jacobian_strength: f32,
+    pub lod_cutoff: f32,
+    pub foam_strength: f32, // Single padding float to align to 16 bytes
 }
 
 /// A custom [`ExtendedMaterial`] that creates animated water ripples.
@@ -192,40 +265,28 @@ impl Default for OceanParams {
 /// - Cascade 1: 85m scale (medium waves)
 /// - Cascade 2: 10m scale (small details/ripples)
 #[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
-pub struct OceanMaterial {
+pub struct OceanMaterial<const N: u32> {
+    #[texture(0, dimension = "2d_array")]
+    #[sampler(3)]
+    pub t_displacements: Handle<Image>,
+
+    #[texture(1, dimension = "2d_array")]
+    pub t_derivatives: Handle<Image>,
+
+    // Foam persistence textures (computed each frame)
+    #[texture(2, dimension = "2d_array")]
+    pub t_foam_persistences: Handle<Image>,
     // Cascade 0 - large scale (500m)
-    #[texture(0)]
-    #[sampler(6)]
-    pub t_displacement_0: Handle<Image>,
-    #[texture(1)]
-    pub t_derivatives_0: Handle<Image>,
-    // Cascade 1 - medium scale (85m)
-    #[texture(2)]
-    pub t_displacement_1: Handle<Image>,
-    #[texture(3)]
-    pub t_derivatives_1: Handle<Image>,
-    // Cascade 2 - small scale (10m)
-    #[texture(4)]
-    pub t_displacement_2: Handle<Image>,
-    #[texture(5)]
-    pub t_derivatives_2: Handle<Image>,
     // Foam texture
-    #[texture(7)]
-    #[sampler(8)]
+    #[texture(4)]
+    #[sampler(5)]
     pub t_foam: Handle<Image>,
     // Ocean parameters uniform
-    #[uniform(9)]
+    #[uniform(6)]
     pub params: OceanParams,
-    // Foam persistence textures (computed each frame)
-    #[texture(10)]
-    pub t_foam_persistence_0: Handle<Image>,
-    #[texture(11)]
-    pub t_foam_persistence_1: Handle<Image>,
-    #[texture(12)]
-    pub t_foam_persistence_2: Handle<Image>,
 }
 
-impl Material for OceanMaterial {
+impl<const N: u32> Material for OceanMaterial<N> {
     fn fragment_shader() -> ShaderRef {
         OCEAN_SHADER_PATH.into()
     }
@@ -233,19 +294,31 @@ impl Material for OceanMaterial {
     fn vertex_shader() -> ShaderRef {
         OCEAN_SHADER_PATH.into()
     }
+
+    fn specialize(
+        _pipeline: &bevy::pbr::MaterialPipeline,
+        descriptor: &mut RenderPipelineDescriptor,
+        _layout: &bevy::mesh::MeshVertexBufferLayoutRef,
+        _key: bevy::pbr::MaterialPipelineKey<Self>,
+    ) -> Result<(), SpecializedMeshPipelineError> {
+        if (N > 8) {
+            panic!("cacasdes go upto a maximum of 8");
+        }
+        if let Some(fragment) = &mut descriptor.fragment {
+            fragment
+                .shader_defs
+                .push(ShaderDefVal::UInt("NUMBER_OF_CASCADES".to_string(), N));
+        }
+
+        Ok(())
+    }
 }
 
 #[derive(Resource, Clone, ExtractResource)]
 pub struct OceanImages {
-    pub displacement_0: Handle<Image>,
-    pub displacement_1: Handle<Image>,
-    pub displacement_2: Handle<Image>,
-    pub derivatives_0: Handle<Image>,
-    pub derivatives_1: Handle<Image>,
-    pub derivatives_2: Handle<Image>,
-    pub foam_persistence_0: Handle<Image>,
-    pub foam_persistence_1: Handle<Image>,
-    pub foam_persistence_2: Handle<Image>,
+    pub displacement_image: Handle<Image>,
+    pub derivative_image: Handle<Image>,
+    pub foam_persistence_image: Handle<Image>,
 }
 
 #[derive(Component)]
@@ -261,7 +334,7 @@ impl OceanCamera {
     fn spawn_ocean(
         mut commands: Commands,
         mut meshes: ResMut<Assets<Mesh>>,
-        mut materials: ResMut<Assets<OceanMaterial>>,
+        mut materials: ResMut<Assets<OceanMaterial<NUMBER_OF_CASCADES>>>,
         ocean_images: Res<OceanImages>,
         ocean_params: Res<OceanParams>,
         asset_server: Res<AssetServer>,
@@ -272,17 +345,11 @@ impl OceanCamera {
 
         // Create shared ocean material
         let ocean_material = materials.add(OceanMaterial {
-            t_displacement_0: ocean_images.displacement_0.clone(),
-            t_derivatives_0: ocean_images.derivatives_0.clone(),
-            t_displacement_1: ocean_images.displacement_1.clone(),
-            t_derivatives_1: ocean_images.derivatives_1.clone(),
-            t_displacement_2: ocean_images.displacement_2.clone(),
-            t_derivatives_2: ocean_images.derivatives_2.clone(),
             t_foam: foam_texture.clone(),
             params: *ocean_params,
-            t_foam_persistence_0: ocean_images.foam_persistence_0.clone(),
-            t_foam_persistence_1: ocean_images.foam_persistence_1.clone(),
-            t_foam_persistence_2: ocean_images.foam_persistence_2.clone(),
+            t_displacements: ocean_images.displacement_image.clone(),
+            t_derivatives: ocean_images.derivative_image.clone(),
+            t_foam_persistences: ocean_images.foam_persistence_image.clone(),
         });
 
         // LOD rings configuration: (inner_half_size, outer_half_size, subdivisions)
@@ -489,6 +556,7 @@ impl Plugin for OceanPlugin {
         // Insert default ocean parameters resource
         app.insert_resource(self.params);
         app.insert_resource(OceanSettings {
+            number_of_cascades: NUMBER_OF_CASCADES,
             quality: self.quality,
             wind_speed: self.wind_speed,
             wind_direction: self.wind_direction,
@@ -503,7 +571,7 @@ impl Plugin for OceanPlugin {
         // Sync ocean params to materials every frame
         app.add_systems(Update, sync_ocean_params);
 
-        app.add_plugins(MaterialPlugin::<OceanMaterial>::default());
+        app.add_plugins(MaterialPlugin::<OceanMaterial<NUMBER_OF_CASCADES>>::default());
 
         app.add_plugins((ExtractResourcePlugin::<OceanImages>::default(),));
         app.add_plugins((ExtractResourcePlugin::<OceanSettings>::default(),));
@@ -511,6 +579,7 @@ impl Plugin for OceanPlugin {
 
         let render_app = app.sub_app_mut(RenderApp);
         render_app.insert_resource(OceanSettings {
+            number_of_cascades: NUMBER_OF_CASCADES,
             quality: self.quality,
             wind_speed: self.wind_speed,
             wind_direction: self.wind_direction,
@@ -538,7 +607,7 @@ impl Plugin for OceanPlugin {
 
 #[derive(Resource)]
 struct OceanPipeline {
-    ocean_surface: OceanCascade,
+    ocean_surface: OceanCascade<3>,
 }
 
 #[derive(Debug, Hash, PartialEq, Eq, Clone, RenderLabel)]
@@ -551,8 +620,8 @@ pub struct OceanSurface;
 /// System to sync OceanParams resource to all ocean materials
 fn sync_ocean_params(
     ocean_params: Res<OceanParams>,
-    mut materials: ResMut<Assets<OceanMaterial>>,
-    query: Query<&MeshMaterial3d<OceanMaterial>, With<OceanSurface>>,
+    mut materials: ResMut<Assets<OceanMaterial<3>>>,
+    query: Query<&MeshMaterial3d<OceanMaterial<3>>, With<OceanSurface>>,
 ) {
     if !ocean_params.is_changed() {
         return;
@@ -582,7 +651,7 @@ pub fn setup(
     let texture_size = Extent3d {
         width: settings.quality as u32,
         height: settings.quality as u32,
-        depth_or_array_layers: 1,
+        depth_or_array_layers: settings.number_of_cascades,
     };
     let displacement_descriptor = TextureDescriptor {
         label: Some("Displacement"),
@@ -653,26 +722,14 @@ pub fn setup(
         ..Default::default()
     };
 
-    let displacement_0_texture = image_assets.add(displacement_image.clone());
-    let displacement_1_texture = image_assets.add(displacement_image.clone());
-    let displacement_2_texture = image_assets.add(displacement_image);
-    let derivatives_0_texture = image_assets.add(derivatives_image.clone());
-    let derivatives_1_texture = image_assets.add(derivatives_image.clone());
-    let derivatives_2_texture = image_assets.add(derivatives_image);
-    let foam_persistence_0_texture = image_assets.add(foam_persistence_image.clone());
-    let foam_persistence_1_texture = image_assets.add(foam_persistence_image.clone());
-    let foam_persistence_2_texture = image_assets.add(foam_persistence_image);
+    let displacement_texture_array = image_assets.add(displacement_image);
+    let derivatives_texture_array = image_assets.add(derivatives_image);
+    let foam_persistence_texture_array = image_assets.add(foam_persistence_image);
 
     commands.insert_resource(OceanImages {
-        displacement_0: displacement_0_texture,
-        displacement_1: displacement_1_texture,
-        displacement_2: displacement_2_texture,
-        derivatives_0: derivatives_0_texture,
-        derivatives_1: derivatives_1_texture,
-        derivatives_2: derivatives_2_texture,
-        foam_persistence_0: foam_persistence_0_texture,
-        foam_persistence_1: foam_persistence_1_texture,
-        foam_persistence_2: foam_persistence_2_texture,
+        displacement_image: displacement_texture_array,
+        derivative_image: derivatives_texture_array,
+        foam_persistence_image: foam_persistence_texture_array,
     });
 }
 
@@ -699,30 +756,38 @@ fn init_ocean_pipeline(
         depth: settings.depth,
     };
 
-    let displacement_0_texture = render_assets.get(&ocean_images.displacement_0).unwrap();
-    let displacement_1_texture = render_assets.get(&ocean_images.displacement_1).unwrap();
-    let displacement_2_texture = render_assets.get(&ocean_images.displacement_2).unwrap();
-    let derivatives_0_texture = render_assets.get(&ocean_images.derivatives_0).unwrap();
-    let derivatives_1_texture = render_assets.get(&ocean_images.derivatives_1).unwrap();
-    let derivatives_2_texture = render_assets.get(&ocean_images.derivatives_2).unwrap();
-    let foam_persistence_0_texture = render_assets.get(&ocean_images.foam_persistence_0).unwrap();
-    let foam_persistence_1_texture = render_assets.get(&ocean_images.foam_persistence_1).unwrap();
-    let foam_persistence_2_texture = render_assets.get(&ocean_images.foam_persistence_2).unwrap();
+    let displacement_texture = render_assets.get(&ocean_images.displacement_image).unwrap();
+    let derivatives_texture = render_assets.get(&ocean_images.derivative_image).unwrap();
+    let foam_persistence_texture = render_assets
+        .get(&ocean_images.foam_persistence_image)
+        .unwrap();
 
+    let cascade_data = [
+        OceanCascadeData {
+            displacement: &displacement_texture.texture,
+            derivatives: &derivatives_texture.texture,
+            foam_persistence: &foam_persistence_texture.texture,
+            length_scale: 500.,
+        },
+        OceanCascadeData {
+            displacement: &displacement_texture.texture,
+            derivatives: &derivatives_texture.texture,
+            foam_persistence: &foam_persistence_texture.texture,
+            length_scale: 85.,
+        },
+        OceanCascadeData {
+            displacement: &displacement_texture.texture,
+            derivatives: &derivatives_texture.texture,
+            foam_persistence: &foam_persistence_texture.texture,
+            length_scale: 10.,
+        },
+    ];
     let ocean_resources = OceanPipeline {
         ocean_surface: OceanCascade::new(
             &render_device,
             settings.quality as u32,
             ocean_params,
-            &displacement_0_texture.texture,
-            &displacement_1_texture.texture,
-            &displacement_2_texture.texture,
-            &derivatives_0_texture.texture,
-            &derivatives_1_texture.texture,
-            &derivatives_2_texture.texture,
-            &foam_persistence_0_texture.texture,
-            &foam_persistence_1_texture.texture,
-            &foam_persistence_2_texture.texture,
+            cascade_data,
         ),
     };
     commands.insert_resource(ocean_resources);

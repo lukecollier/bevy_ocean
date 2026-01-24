@@ -22,6 +22,7 @@ pub struct FoamPersistencePipeline {
     size: u32,
     textures_bind_group: BindGroup,
     pipeline: ComputePipeline,
+    layers: u32,
 }
 
 impl FoamPersistencePipeline {
@@ -39,7 +40,7 @@ impl FoamPersistencePipeline {
                     binding: 0,
                     visibility: ShaderStages::COMPUTE,
                     ty: BindingType::StorageTexture {
-                        view_dimension: TextureViewDimension::D2,
+                        view_dimension: TextureViewDimension::D2Array,
                         format: TextureFormat::Rgba32Float,
                         access: StorageTextureAccess::ReadOnly,
                     },
@@ -50,7 +51,7 @@ impl FoamPersistencePipeline {
                     binding: 1,
                     visibility: ShaderStages::COMPUTE,
                     ty: BindingType::StorageTexture {
-                        view_dimension: TextureViewDimension::D2,
+                        view_dimension: TextureViewDimension::D2Array,
                         format: TextureFormat::R32Float,
                         access: StorageTextureAccess::ReadWrite,
                     },
@@ -115,6 +116,7 @@ impl FoamPersistencePipeline {
             size,
             textures_bind_group,
             pipeline,
+            layers: displacement_texture.depth_or_array_layers(),
         }
     }
 
@@ -134,6 +136,6 @@ impl FoamPersistencePipeline {
         compute_pass.set_pipeline(&self.pipeline);
         compute_pass.set_bind_group(0, &self.textures_bind_group, &[]);
         compute_pass.set_push_constants(0, bytemuck::cast_slice(&[parameters]));
-        compute_pass.dispatch_workgroups(self.size / 16, self.size / 16, 1);
+        compute_pass.dispatch_workgroups(self.size / 16, self.size / 16, self.layers);
     }
 }

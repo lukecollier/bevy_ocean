@@ -5,10 +5,10 @@ var amp_dx_dz__dy_dxz_texture: texture_storage_2d<rgba32float, read>;
 var amp_dyx_dyz__dxx_dzz_texture: texture_storage_2d<rgba32float, read>;
 
 @group(0) @binding(2)
-var out_displacement: texture_storage_2d<rgba32float, read_write>;
+var out_displacement: texture_storage_2d_array<rgba32float, read_write>;
 
 @group(0) @binding(3)
-var out_derivatives: texture_storage_2d<rgba32float, write>;
+var out_derivatives: texture_storage_2d_array<rgba32float, write>;
 
 struct Parameters {
   lambda: f32,
@@ -22,6 +22,7 @@ fn merge(
     @builtin(global_invocation_id) id: vec3<u32>,
 ) {
     let coords = vec2<i32>(id.xy);
+    let layer = id.z;
     let l = params.lambda;
 
     let dx_dz_dy_dxz = textureLoad(amp_dx_dz__dy_dxz_texture, coords);
@@ -40,12 +41,14 @@ fn merge(
     textureStore(
         out_displacement,
         coords,
+        layer,
         vec4<f32>(displacement, jacobian),
     );
 
     textureStore(
         out_derivatives,
         coords,
+        layer,
         derivatives,
     );
 }
@@ -58,15 +61,16 @@ fn blur_turbulence(
     @builtin(global_invocation_id) id: vec3<u32>,
 ) {
     let coords = vec2<i32>(id.xy);
+    let layer = id.z;
 
     var value = 0.0;
     for (var x = -4; x <= 4; x = x + 1) {
         for (var y = -4; y <= 4; y = y + 1) {
             var ic = vec2<i32>(coords.x + x, coords.y + y);
             let g = 1.0 / sqrt(2.0 * PI * sigma * sigma) * exp(-(f32(x) * f32(x) + f32(y) * f32(y)) / (2.0 * sigma * sigma));
-            value = value + g * textureLoad(out_displacement, ic).w;
+            value = value + g * textureLoad(out_displacement, ic, layer).w;
         }
     }
 
-    textureStore(out_displacement, coords, vec4<f32>(textureLoad(out_displacement, coords).rgb, value));
+    textureStore(out_displacement, coords, layer, vec4<f32>(textureLoad(out_displacement, coords, layer).rgb, value));
 }

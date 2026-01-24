@@ -75,6 +75,4 @@ The app exposes 8 sliders via Bevy Feathers UI that sync to shader uniforms each
 ## Key Considerations
 
 - **Bevy 0.17**: Uses experimental features (`experimental_bevy_feathers`, `meshlet_processor`)
-- **Workgroup size**: 16×16 (256 threads) for most compute shaders
-- **FFT passes**: 16 total per cascade per frame (log₂(256) × 2 dimensions)
 - **Linting**: Allows `too_many_arguments` and `type_complexity` (idiomatic Bevy patterns)
