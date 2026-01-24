@@ -2,6 +2,7 @@ use bevy::{
     asset::{RenderAssetUsages, embedded_asset},
     ecs::schedule::common_conditions::{not, resource_exists},
     image::{ImageAddressMode, ImageFilterMode, ImageSampler, ImageSamplerDescriptor},
+    light::{NotShadowCaster, NotShadowReceiver},
     prelude::*,
     render::{
         Render, RenderApp,
@@ -16,12 +17,36 @@ use bevy::{
 };
 use rand::prelude::*;
 
+use crate::colors::{fog, ocean, sky, sun};
 use crate::ocean::{OceanCascade, OceanCascadeParameters};
 
 const OCEAN_SHADER_PATH: &str = "embedded://bevy_ocean/shaders/ocean_shader.wgsl";
-const SIZE: u32 = 256;
 
-pub struct OceanPlugin;
+#[derive(Clone, Copy)]
+pub enum Quality {
+    Ultra = 1024,
+    High = 512,
+    Medium = 256,
+    Low = 128,
+    VeryLow = 64,
+}
+
+pub struct OceanPlugin {
+    quality: Quality,
+}
+
+impl Default for OceanPlugin {
+    fn default() -> Self {
+        Self {
+            quality: Quality::Low,
+        }
+    }
+}
+
+#[derive(Resource, ExtractResource, Clone)]
+pub struct OceanSettings {
+    quality: Quality,
+}
 
 /// Ocean rendering parameters that can be modified at runtime.
 /// Changes to this resource will be reflected in the water simulation.
@@ -43,6 +68,32 @@ pub struct OceanParams {
     pub light_intensity: f32,
     /// Subsurface scattering intensity (0.0 - 1.0, default 0.4)
     pub sss_intensity: f32,
+    /// Sun direction vector (will be normalized in shader)
+    pub sun_direction: Vec3,
+    /// Fog color (matches sky horizon, updated by day_night_cycle)
+    pub fog_color: Vec3,
+    /// Distance where fog starts (default 500.0)
+    pub fog_start: f32,
+    /// Distance where fog is fully opaque (default 5000.0)
+    pub fog_end: f32,
+
+    // Ocean colors
+    /// Deep ocean color (looking straight down)
+    pub deep_color: Vec3,
+    /// Shallow ocean color (at grazing angles)
+    pub shallow_color: Vec3,
+    /// Sky reflection color during day
+    pub sky_day: Vec3,
+    /// Sky reflection color at night
+    pub sky_night: Vec3,
+    /// Sun color for specular highlights
+    pub sun_color: Vec3,
+    /// Subsurface scattering color (turquoise glow)
+    pub sss_color: Vec3,
+    /// Foam highlight color
+    pub foam_color: Vec3,
+    /// Ambient light color
+    pub ambient_color: Vec3,
 }
 
 impl Default for OceanParams {
@@ -53,9 +104,21 @@ impl Default for OceanParams {
             foam_threshold: 1.0,
             foam_multiplier: 2.0,
             foam_tile_scale: 8.0,
-            roughness: 0.05,
+            roughness: 0.1,
             light_intensity: 3.0,
             sss_intensity: 1.0,
+            sun_direction: Vec3::new(0.3, 0.8, 0.2),
+            fog_color: fog::COLOR_DAY,
+            fog_start: 8192.0,
+            fog_end: 32768.0,
+            deep_color: ocean::DEEP,
+            shallow_color: ocean::SHALLOW,
+            sky_day: sky::REFLECTION_DAY,
+            sky_night: sky::REFLECTION_NIGHT,
+            sun_color: sun::COLOR_OCEAN,
+            sss_color: ocean::SSS,
+            foam_color: ocean::FOAM,
+            ambient_color: ocean::AMBIENT,
         }
     }
 }
@@ -120,6 +183,174 @@ pub struct OceanImages {
     pub foam_persistence_0: Handle<Image>,
     pub foam_persistence_1: Handle<Image>,
     pub foam_persistence_2: Handle<Image>,
+}
+
+#[derive(Component)]
+#[require(Transform)]
+pub struct OceanCamera;
+
+/// Component storing the grid snap size for each ocean LOD ring
+/// Each ring snaps to its own cell size to prevent vertex swimming
+#[derive(Component)]
+struct OceanSnapSize(f32);
+
+impl OceanCamera {
+    fn spawn_ocean(
+        mut commands: Commands,
+        mut meshes: ResMut<Assets<Mesh>>,
+        mut materials: ResMut<Assets<OceanMaterial>>,
+        ocean_images: Res<OceanImages>,
+        ocean_params: Res<OceanParams>,
+        asset_server: Res<AssetServer>,
+    ) {
+        // Load foam texture
+        let foam_texture: Handle<Image> =
+            asset_server.load("embedded://bevy_ocean/textures/foam.png");
+
+        // Create shared ocean material
+        let ocean_material = materials.add(OceanMaterial {
+            t_displacement_0: ocean_images.displacement_0.clone(),
+            t_derivatives_0: ocean_images.derivatives_0.clone(),
+            t_displacement_1: ocean_images.displacement_1.clone(),
+            t_derivatives_1: ocean_images.derivatives_1.clone(),
+            t_displacement_2: ocean_images.displacement_2.clone(),
+            t_derivatives_2: ocean_images.derivatives_2.clone(),
+            t_foam: foam_texture.clone(),
+            params: *ocean_params,
+            t_foam_persistence_0: ocean_images.foam_persistence_0.clone(),
+            t_foam_persistence_1: ocean_images.foam_persistence_1.clone(),
+            t_foam_persistence_2: ocean_images.foam_persistence_2.clone(),
+        });
+
+        // LOD rings configuration: (inner_half_size, outer_half_size, subdivisions)
+        // Each ring is a square frame that fills the gap between sizes
+        // inner_half_size=0 creates a solid square (center patch)
+        // subdivisions = cells along the full outer edge (like a plane)
+        let lod_rings = [
+            (0.0, 256.0, 1024),            // Ring 0: Center square, highest detail
+            (256.0, 2048.0 + 256.0, 1024), // Ring 1: Medium detail frame
+            (2048.0 + 256., 8192.0, 512),  // Ring 2: Low detail frame
+            (8192.0, 32768.0, 256),        // Ring 3: Very low detail, extends to horizon
+        ];
+
+        for (inner_half, outer_half, subdivisions) in lod_rings {
+            let mesh = Self::create_square_ring_mesh(inner_half, outer_half, subdivisions);
+
+            // Calculate cell size for this ring: total_size / subdivisions
+            let cell_size = (outer_half * 2.0) / subdivisions as f32;
+
+            commands.spawn((
+                Mesh3d(meshes.add(mesh)),
+                MeshMaterial3d(ocean_material.clone()),
+                Transform::from_translation(Vec3::ZERO),
+                OceanSurface,
+                OceanSnapSize(cell_size),
+                NotShadowCaster,
+                NotShadowReceiver,
+            ));
+        }
+    }
+    /// Make the ocean mesh follow the camera's XZ position for infinite ocean illusion
+    /// Each ring snaps to its own cell size to prevent vertex swimming
+    fn ocean_follow_camera(
+        camera_query: Query<&Transform, With<OceanCamera>>,
+        mut ocean_query: Query<
+            (&mut Transform, &OceanSnapSize),
+            (With<OceanSurface>, Without<OceanCamera>),
+        >,
+    ) {
+        let Some(camera_transform) = camera_query.iter().next() else {
+            return;
+        };
+
+        for (mut ocean_transform, snap_size) in &mut ocean_query {
+            // Snap camera position to this ring's grid cell size
+            let snap = snap_size.0;
+            let snapped_x = (camera_transform.translation.x / snap).floor() * snap;
+            let snapped_z = (camera_transform.translation.z / snap).floor() * snap;
+
+            // Follow camera on XZ plane (snapped), keep Y at 0
+            ocean_transform.translation.x = snapped_x;
+            ocean_transform.translation.z = snapped_z;
+        }
+    }
+
+    /// Generate a square ring (frame) mesh for ocean LOD
+    /// inner_half_size: half-width of the inner cutout (0.0 for solid square)
+    /// outer_half_size: half-width of the outer edge
+    /// subdivisions: number of cells along the full outer edge (like a plane)
+    ///
+    /// Creates a grid matching a full plane's subdivisions, but skips
+    /// triangles for quads entirely inside the inner square.
+    fn create_square_ring_mesh(
+        inner_half_size: f32,
+        outer_half_size: f32,
+        subdivisions: u32,
+    ) -> Mesh {
+        use bevy::mesh::{Indices, PrimitiveTopology};
+
+        let mut positions: Vec<[f32; 3]> = Vec::new();
+        let mut normals: Vec<[f32; 3]> = Vec::new();
+        let mut uvs: Vec<[f32; 2]> = Vec::new();
+        let mut indices: Vec<u32> = Vec::new();
+
+        let step = (2.0 * outer_half_size) / subdivisions as f32;
+        let verts_per_row = subdivisions + 1;
+
+        // Generate full grid of vertices (same as a plane would have)
+        for j in 0..=subdivisions {
+            for i in 0..=subdivisions {
+                let x = -outer_half_size + i as f32 * step;
+                let z = -outer_half_size + j as f32 * step;
+
+                positions.push([x, 0.0, z]);
+                normals.push([0.0, 1.0, 0.0]);
+                uvs.push([x, z]);
+            }
+        }
+
+        // Generate triangles, skipping quads entirely inside the inner square
+        for j in 0..subdivisions {
+            for i in 0..subdivisions {
+                // Calculate quad bounds
+                let x_min = -outer_half_size + i as f32 * step;
+                let x_max = x_min + step;
+                let z_min = -outer_half_size + j as f32 * step;
+                let z_max = z_min + step;
+
+                // Skip if quad is entirely inside the inner square (with small epsilon)
+                let eps = step * 0.01;
+                let inside = x_min >= -inner_half_size + eps
+                    && x_max <= inner_half_size - eps
+                    && z_min >= -inner_half_size + eps
+                    && z_max <= inner_half_size - eps;
+
+                if !inside {
+                    // Vertex indices for this quad
+                    let bl = j * verts_per_row + i; // bottom-left
+                    let br = j * verts_per_row + i + 1; // bottom-right
+                    let tl = (j + 1) * verts_per_row + i; // top-left
+                    let tr = (j + 1) * verts_per_row + i + 1; // top-right
+
+                    // Two triangles (CCW winding for +Y normal)
+                    indices.push(bl);
+                    indices.push(tl);
+                    indices.push(br);
+
+                    indices.push(br);
+                    indices.push(tl);
+                    indices.push(tr);
+                }
+            }
+        }
+
+        let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, default());
+        mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+        mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
+        mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
+        mesh.insert_indices(Indices::U32(indices));
+        mesh
+    }
 }
 
 struct OceanNode {
@@ -191,8 +422,12 @@ impl Plugin for OceanPlugin {
         embedded_asset!(app, strip_prefix, "./textures/foam.png");
         // Insert default ocean parameters resource
         app.init_resource::<OceanParams>();
+        app.insert_resource(OceanSettings {
+            quality: self.quality,
+        });
 
-        app.add_systems(Startup, setup);
+        app.add_systems(Startup, (setup, OceanCamera::spawn_ocean).chain());
+        app.add_systems(Update, OceanCamera::ocean_follow_camera);
 
         // Sync ocean params to materials every frame
         app.add_systems(Update, sync_ocean_params);
@@ -200,8 +435,12 @@ impl Plugin for OceanPlugin {
         app.add_plugins(MaterialPlugin::<OceanMaterial>::default());
 
         app.add_plugins((ExtractResourcePlugin::<OceanImages>::default(),));
+        app.add_plugins((ExtractResourcePlugin::<OceanSettings>::default(),));
 
         let render_app = app.sub_app_mut(RenderApp);
+        render_app.insert_resource(OceanSettings {
+            quality: self.quality,
+        });
         // Run init_ocean_pipeline in ExtractCommands phase so it runs after extraction
         render_app.add_systems(
             Render,
@@ -257,10 +496,14 @@ pub fn generate_noise_data<R: Rng + ?Sized>(rng: &mut R, size: usize) -> Vec<f32
     return buf;
 }
 
-pub fn setup(mut commands: Commands, mut image_assets: ResMut<Assets<Image>>) {
+pub fn setup(
+    mut commands: Commands,
+    mut image_assets: ResMut<Assets<Image>>,
+    settings: Res<OceanSettings>,
+) {
     let texture_size = Extent3d {
-        width: SIZE,
-        height: SIZE,
+        width: settings.quality as u32,
+        height: settings.quality as u32,
         depth_or_array_layers: 1,
     };
     let displacement_descriptor = TextureDescriptor {
@@ -363,13 +606,14 @@ fn init_ocean_pipeline(
     pipeline_cache: Res<PipelineCache>,
     ocean_images: Option<Res<OceanImages>>,
     render_assets: Res<RenderAssets<GpuImage>>,
+    settings: Res<OceanSettings>,
 ) {
     // Wait for the resource to be extracted from main world
     let Some(ocean_images) = ocean_images else {
         return;
     };
     let ocean_params = OceanCascadeParameters {
-        size: SIZE,
+        size: settings.quality as u32,
         wind_speed: 10.0,
         wind_direction: 180.0,
         swell: 0.3,
@@ -388,7 +632,7 @@ fn init_ocean_pipeline(
     let ocean_resources = OceanPipeline {
         ocean_surface: OceanCascade::new(
             &render_device,
-            SIZE,
+            settings.quality as u32,
             ocean_params,
             &displacement_0_texture.texture,
             &displacement_1_texture.texture,

@@ -44,6 +44,19 @@ struct OceanParamsUniform {
     roughness: f32,
     light_intensity: f32,
     sss_intensity: f32,
+    sun_direction: vec3<f32>,
+    fog_color: vec3<f32>,
+    fog_start: f32,
+    fog_end: f32,
+    // Ocean colors
+    deep_color: vec3<f32>,
+    shallow_color: vec3<f32>,
+    sky_day: vec3<f32>,
+    sky_night: vec3<f32>,
+    sun_color: vec3<f32>,
+    sss_color: vec3<f32>,
+    foam_color: vec3<f32>,
+    ambient_color: vec3<f32>,
 }
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(9)
@@ -70,10 +83,10 @@ const NEAR_DIST_THRESHOLD: f32 = 300.0;   // Include cascade 2 when closer than 
 struct OceanVertexOutput {
     @builtin(position) position: vec4<f32>,
     @location(0) world_position: vec4<f32>,
-    @location(1) world_normal: vec3<f32>,
-    @location(2) uv_0: vec2<f32>,      // UV for cascade 0
-    @location(3) uv_1: vec2<f32>,      // UV for cascade 1
-    @location(4) uv_2: vec2<f32>,      // UV for cascade 2
+    @location(1) uv_0: vec2<f32>,      // UV for cascade 0
+    @location(2) uv_1: vec2<f32>,      // UV for cascade 1
+    @location(3) uv_2: vec2<f32>,      // UV for cascade 2
+    @location(4) lod_factors: vec3<f32>, // LOD scale factors for each cascade
     @location(5) jacobian: f32,
 }
 
@@ -129,37 +142,14 @@ fn vertex(in: Vertex) -> OceanVertexOutput {
     world_pos.y = world_pos.y + total_displacement.y * params.displacement_scale;
     world_pos.z = world_pos.z + total_displacement.z * params.displacement_scale;
 
-    // Sample derivatives with LOD-based blending
-    let deriv_0 = textureSampleLevel(t_derivatives_0, s_ocean, uv_0, 0.0);
-    var blended_deriv = deriv_0 * lod_c0;
-
-    if (include_mid) {
-        let deriv_1 = textureSampleLevel(t_derivatives_1, s_ocean, uv_1, 0.0);
-        blended_deriv = blended_deriv + deriv_1 * lod_c1;
-    }
-
-    if (include_near) {
-        let deriv_2 = textureSampleLevel(t_derivatives_2, s_ocean, uv_2, 0.0);
-        blended_deriv = blended_deriv + deriv_2 * lod_c2;
-    }
-
-    // Compute normal from blended derivatives (using uniform parameter)
-    let slope_x = blended_deriv.x / (1.0 + blended_deriv.z) * params.normal_strength;
-    let slope_z = blended_deriv.y / (1.0 + blended_deriv.w) * params.normal_strength;
-    let computed_normal = normalize(vec3<f32>(-slope_x, 1.0, -slope_z));
-
-    // Transform normal to world space
-    let world_normal = mesh_functions::mesh_normal_local_to_world(
-        computed_normal, in.instance_index
-    );
-
+    // Pass LOD factors to fragment shader for per-pixel normal calculation
     var out: OceanVertexOutput;
     out.world_position = world_pos;
     out.position = position_world_to_clip(world_pos.xyz);
-    out.world_normal = world_normal;
     out.uv_0 = uv_0;
     out.uv_1 = uv_1;
     out.uv_2 = uv_2;
+    out.lod_factors = vec3<f32>(lod_c0, lod_c1, lod_c2);
     out.jacobian = jacobian;
 
     return out;
@@ -199,13 +189,16 @@ fn fresnel_schlick(cos_theta: f32, f0: vec3<f32>) -> vec3<f32> {
 
 // Compute geometric roughness from normal variation across the pixel
 // This prevents specular aliasing at close range
+// Note: With per-pixel normals from texture, we scale down the variance
+// contribution to avoid killing specular highlights
 fn compute_geometric_roughness(normal: vec3<f32>, base_roughness: f32) -> f32 {
     // Screen-space derivatives of the normal
     let dndu = dpdx(normal);
     let dndv = dpdy(normal);
 
     // Variance approximation - how much the normal changes across this pixel
-    let variance = dot(dndu, dndu) + dot(dndv, dndv);
+    // Scale down significantly for per-pixel normals to preserve specular
+    let variance = (dot(dndu, dndu) + dot(dndv, dndv)) * 0.1;
 
     // Add variance to roughness squared, then sqrt back
     // This blurs specular where normals vary rapidly (close-up detail)
@@ -216,15 +209,38 @@ fn compute_geometric_roughness(normal: vec3<f32>, base_roughness: f32) -> f32 {
 
 @fragment
 fn fragment(mesh: OceanVertexOutput) -> @location(0) vec4<f32> {
-    let normal = normalize(mesh.world_normal);
-
     // Get view direction (from fragment to camera)
     let camera_pos = view.world_position;
     let view_dir = normalize(camera_pos - mesh.world_position.xyz);
+    let view_dist = length(camera_pos - mesh.world_position.xyz);
 
-    // Light direction (sun from above and slightly to the side)
-    let light_dir = normalize(vec3<f32>(0.3, 0.8, 0.2));
+    // Per-pixel normal calculation: sample derivatives and blend with LOD factors
+    let lod_c0 = mesh.lod_factors.x;
+    let lod_c1 = mesh.lod_factors.y;
+    let lod_c2 = mesh.lod_factors.z;
+
+    // Sample derivatives per-pixel for smooth lighting (always sample all, blend with LOD)
+    let deriv_0 = textureSample(t_derivatives_0, s_ocean, mesh.uv_0);
+    let deriv_1 = textureSample(t_derivatives_1, s_ocean, mesh.uv_1);
+    let deriv_2 = textureSample(t_derivatives_2, s_ocean, mesh.uv_2);
+
+    // Blend derivatives based on LOD factors
+    let blended_deriv = deriv_0 * lod_c0 + deriv_1 * lod_c1 + deriv_2 * lod_c2;
+
+    // Compute normal from blended derivatives (per-pixel)
+    // Same formula as was used in vertex shader
+    let slope_x = blended_deriv.x / (1.0 + blended_deriv.z) * params.normal_strength;
+    let slope_z = blended_deriv.y / (1.0 + blended_deriv.w) * params.normal_strength;
+    let normal = normalize(vec3<f32>(-slope_x, 1.0, -slope_z));
+
+    // Light direction (sun position in sky)
+    let light_dir = normalize(params.sun_direction);
     let half_vec = normalize(light_dir + view_dir);
+
+    // Sun height factor: smoothly fade sun contribution when below horizon
+    // light_dir.y < 0 means sun is below horizon
+    // Smooth transition from -0.1 to 0.2 for gradual sunrise/sunset
+    let sun_height = saturate((light_dir.y + 0.1) / 0.3);
 
     // PBR parameters for water (using uniform)
     // Geometric roughness prevents specular aliasing at close range
@@ -255,34 +271,30 @@ fn fragment(mesh: OceanVertexOutput) -> @location(0) vec4<f32> {
     // Light scatters through thin parts of waves, creating a glow effect
     let wave_height = mesh.world_position.y;
     let sss_mask = saturate(dot(view_dir, -light_dir) * 0.5 + 0.5);
-    let sss_color = vec3<f32>(0.1, 0.4, 0.35);  // Turquoise glow
     let sss = sss_mask * saturate(wave_height * 0.3 + 0.2) * params.sss_intensity;
 
-    // Ocean colors - more natural, less saturated
-    let deep_color = vec3<f32>(0.02, 0.05, 0.12);
-    let shallow_color = vec3<f32>(0.05, 0.18, 0.28);
-    let sky_color = vec3<f32>(0.6, 0.75, 0.9);
-    let sun_color = vec3<f32>(1.0, 0.95, 0.85);
+    // Ocean colors from params
+    let sky_color = mix(params.sky_night, params.sky_day, sun_height);
 
     // Mix ocean color based on view angle and wave height
     let depth_factor = saturate(1.0 - ndotv + wave_height * 0.1);
-    var ocean_color = mix(shallow_color, deep_color, depth_factor);
+    var ocean_color = mix(params.shallow_color, params.deep_color, depth_factor);
 
-    // Add wrapped diffuse lighting (softer shadows)
-    ocean_color = ocean_color * (0.4 + 0.6 * wrapped_diffuse);
+    // Add wrapped diffuse lighting (softer shadows), scaled by sun height
+    ocean_color = ocean_color * (0.4 + 0.6 * wrapped_diffuse * sun_height);
 
-    // Add subsurface scattering
-    ocean_color = ocean_color + sss_color * sss;
+    // Add subsurface scattering (only when sun is up)
+    ocean_color = ocean_color + params.sss_color * sss * sun_height;
 
     // Add sky reflection based on PBR fresnel
     // Reduce (but don't eliminate) reflection at close range to preserve surface detail
-    let view_dist = length(camera_pos - mesh.world_position.xyz);
     let reflection_dist_fade = mix(0.3, 1.0, saturate(view_dist / 150.0));
     let reflection_strength = env_fresnel.r;  // Use scalar from fresnel
     ocean_color = mix(ocean_color, sky_color, reflection_strength * 0.5 * reflection_dist_fade);
 
     // Add PBR sun specular highlight (using uniform light intensity)
-    ocean_color = ocean_color + sun_color * specular * params.light_intensity * ndotl;
+    // Fade out when sun is below horizon
+    ocean_color = ocean_color + params.sun_color * specular * params.light_intensity * ndotl * sun_height;
 
     // Sample persistent foam from compute shader (has exponential decay applied)
     // Each cascade contributes foam at its respective scale
@@ -324,11 +336,11 @@ fn fragment(mesh: OceanVertexOutput) -> @location(0) vec4<f32> {
     // The noise acts as a threshold mask for where foam appears
     let foam_mask = saturate((base_turbulence - (1.0 - foam_noise) * 0.5) * 2.0);
 
-    // Add foam as white highlights (like original implementation)
-    ocean_color = ocean_color + vec3<f32>(foam_mask * 0.8);
+    // Add foam as highlights (uses foam color from params)
+    ocean_color = ocean_color + params.foam_color * foam_mask * 0.8;
 
-    // Slight ambient
-    ocean_color = ocean_color + vec3<f32>(0.02, 0.03, 0.05);
+    // Add ambient light
+    ocean_color = ocean_color + params.ambient_color;
 
     // Debug mode: visualize jacobian values
     if (DEBUG_JACOBIAN) {
@@ -345,6 +357,10 @@ fn fragment(mesh: OceanVertexOutput) -> @location(0) vec4<f32> {
     if (DEBUG_FOAM_TEXTURE) {
         return vec4(vec3(foam_noise), 1.0);
     }
+
+    // Distance fog - blend to horizon color at distance
+    let fog_factor = smoothstep(params.fog_start, params.fog_end, view_dist);
+    ocean_color = mix(ocean_color, params.fog_color, fog_factor);
 
     return vec4(ocean_color, 1.0);
 }
