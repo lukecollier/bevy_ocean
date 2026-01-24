@@ -27,7 +27,7 @@ fn main(
     @builtin(global_invocation_id) id: vec3<u32>,
 ) {
     let coords = vec2<i32>(id.xy);
-    let layer = vec2<i32>(id.z);
+    let layer = id.z;
     let displacement = textureLoad(t_displacement, coords, layer);
 
     textureStore(

@@ -63,7 +63,8 @@ fn blur_turbulence(
     @builtin(global_invocation_id) id: vec3<u32>,
 ) {
     let coords = vec2<i32>(id.xy);
-    let layer = id.z;
+    // let layer = id.z;
+    let layer = params.layer;
 
     var value = 0.0;
     for (var x = -4; x <= 4; x = x + 1) {

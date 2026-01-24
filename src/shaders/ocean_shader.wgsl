@@ -95,7 +95,7 @@ fn vertex(in: Vertex) -> OceanVertexOutput {
 
     // Calculate view distance for LOD-based cascade blending
     let camera_pos = view.world_position;
-    let view_dist = length(camera_pos - world_pos.xyz);
+    let view_dist = min(length(camera_pos - world_pos.xyz), 0.01);
 
     var total_displacement = vec3(0.);
     var jacobian = 0.;
@@ -111,8 +111,8 @@ fn vertex(in: Vertex) -> OceanVertexOutput {
         // This allows meshes to tile seamlessly and scale independently
         let uv = world_pos.xz / cascade_param.length_scale;
         let d0 = textureSampleLevel(t_displacements, s_ocean, uv, layer, 0.0);
-        total_displacement = d0.xyz * lod_c0;
-        jacobian = d0.w * cascade_param.jacobian_strength;
+        total_displacement = total_displacement + d0.xyz * lod_c0;
+        jacobian = jacobian + d0.w * cascade_param.jacobian_strength;
       }
     }
 
@@ -126,14 +126,13 @@ fn vertex(in: Vertex) -> OceanVertexOutput {
     out.world_position = world_pos;
     out.position = position_world_to_clip(world_pos.xyz);
     out.base_uv = world_pos.xz / params.cascades[0].length_scale;
-    // out.lod_factors = vec3<f32>(lod_c0, lod_c1, lod_c2);
     out.jacobian = jacobian;
 
     return out;
 }
 
 // Debug modes
-const DEBUG_JACOBIAN: bool = false;
+const DEBUG_JACOBIAN: bool = true;
 const DEBUG_FOAM_TEXTURE: bool = false;
 
 // PBR helper functions
@@ -190,7 +189,7 @@ fn fragment(mesh: OceanVertexOutput) -> @location(0) vec4<f32> {
     // Get view direction (from fragment to camera)
     let camera_pos = view.world_position;
     let view_dir = normalize(camera_pos - mesh.world_position.xyz);
-    let view_dist = length(camera_pos - mesh.world_position.xyz);
+    let view_dist = min(length(camera_pos - mesh.world_position.xyz), 0.01);
 
     // Sample derivatives per-pixel for smooth lighting (always sample all, blend with LOD)
 
@@ -229,7 +228,7 @@ fn fragment(mesh: OceanVertexOutput) -> @location(0) vec4<f32> {
       let noise = textureSample(t_foam, s_ocean, foam_uv).r;
 
       // Combine noise at different scales (like the original's multi-cascade approach)
-      foam_noise = foam_noise + (noise * cascade_param.foam_strength);
+      foam_noise = foam_noise + (noise * cascade_param.foam_strength) * lod_c;
     }
 
     // Compute normal from blended derivatives (per-pixel)

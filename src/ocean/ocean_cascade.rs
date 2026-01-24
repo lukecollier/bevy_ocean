@@ -77,8 +77,9 @@ impl<const N: usize> OceanCascade<N> {
                 }
             } else {
                 // inbetween cascade
+                let prev_length_scale = cascade_data[idx - 1].length_scale;
                 let next_length_scale = cascade_data[idx + 1].length_scale;
-                let boundary_low = 2.0 * std::f32::consts::PI / length_scale * 6.0;
+                let boundary_low = 2.0 * std::f32::consts::PI / prev_length_scale * 6.0;
                 let boundary_high = 2.0 * std::f32::consts::PI / next_length_scale * 6.0;
                 OceanSpectrumParameters {
                     cut_off_low: boundary_low,
