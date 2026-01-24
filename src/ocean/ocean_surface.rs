@@ -24,8 +24,8 @@ pub struct OceanSurface {
     initial_spectrum_pipeline: InitialSpectrumPipeline,
     time_dependent_spectrum_pipeline: TimeDependentSpectrumPipeline,
     fft: FFT,
-    waves_data_merge_pipeline: WavesDataMergePipeline,
-    foam_persistence_pipeline: FoamPersistencePipeline,
+    pub waves_data_merge_pipeline: WavesDataMergePipeline,
+    pub foam_persistence_pipeline: FoamPersistencePipeline,
     // generate_mipmaps_pipeline: GenerateMipmapsPipeline,
 }
 
@@ -162,6 +162,7 @@ impl OceanSurface {
         queue: &RenderQueue,
         time: f32,
         dt: std::time::Duration,
+        layer: u32,
     ) {
         if self.parameters_changed {
             self.initial_spectrum_pipeline.dispatch(encoder, queue);
@@ -172,8 +173,8 @@ impl OceanSurface {
 
         self.fft.dispatch(encoder);
 
-        self.waves_data_merge_pipeline.dispatch(encoder, dt);
-        self.foam_persistence_pipeline.dispatch(encoder, dt);
+        self.waves_data_merge_pipeline.dispatch(encoder, dt, layer);
+        self.foam_persistence_pipeline.dispatch(encoder, dt, layer);
         // self.generate_mipmaps_pipeline.dispatch(encoder);
     }
 

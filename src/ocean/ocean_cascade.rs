@@ -112,8 +112,10 @@ impl<const N: usize> OceanCascade<N> {
         time: f32,
         dt: std::time::Duration,
     ) {
+        let mut layer = 0;
         for surface in &self.cascades {
-            surface.dispatch(encoder, queue, time, dt);
+            surface.dispatch(encoder, queue, time, dt, layer);
+            layer += 1;
         }
     }
 }

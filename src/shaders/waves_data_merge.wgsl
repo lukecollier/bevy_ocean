@@ -12,7 +12,8 @@ var out_derivatives: texture_storage_2d_array<rgba32float, write>;
 
 struct Parameters {
   lambda: f32,
-  delta_time: f32
+  delta_time: f32,
+  layer: u32
 };
 
 var<push_constant> params: Parameters;
@@ -22,7 +23,8 @@ fn merge(
     @builtin(global_invocation_id) id: vec3<u32>,
 ) {
     let coords = vec2<i32>(id.xy);
-    let layer = id.z;
+    // let layer = id.z;
+    let layer = params.layer;
     let l = params.lambda;
 
     let dx_dz_dy_dxz = textureLoad(amp_dx_dz__dy_dxz_texture, coords);

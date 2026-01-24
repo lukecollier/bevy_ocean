@@ -14,6 +14,7 @@ use bevy::render::{
 struct Parameters {
     lambda: f32,
     delta_time: f32,
+    layer: u32,
 }
 
 pub struct WavesDataMergePipeline {
@@ -21,7 +22,6 @@ pub struct WavesDataMergePipeline {
     lambda: f32,
     textures_bind_group: BindGroup,
     pipeline: ComputePipeline,
-    blur_turbulence_pipeline: ComputePipeline,
     layers: u32,
 }
 
@@ -90,7 +90,7 @@ impl WavesDataMergePipeline {
             bind_group_layouts: &[&textures_bind_group_layout],
             push_constant_ranges: &[PushConstantRange {
                 stages: ShaderStages::COMPUTE,
-                range: 0..8,
+                range: 0..std::mem::size_of::<Parameters>() as u32,
             }],
         });
 
@@ -111,16 +111,6 @@ impl WavesDataMergePipeline {
             compilation_options: PipelineCompilationOptions::default(),
             cache: None,
         });
-
-        let blur_turbulence_pipeline =
-            device.create_compute_pipeline(&RawComputePipelineDescriptor {
-                label: Some("Blur turbulence pipeline"),
-                layout: Some(&pipeline_layout),
-                module: &shader,
-                entry_point: Some("blur_turbulence"),
-                compilation_options: PipelineCompilationOptions::default(),
-                cache: None,
-            });
 
         let textures_bind_group = device.create_bind_group(
             "Waves data merge - textures",
@@ -170,12 +160,12 @@ impl WavesDataMergePipeline {
             lambda,
             textures_bind_group,
             pipeline,
-            blur_turbulence_pipeline,
             layers: displacement_texture.depth_or_array_layers(),
         }
     }
 
-    pub fn dispatch(&self, encoder: &mut CommandEncoder, dt: std::time::Duration) {
+    // todo: Cleanup layer and use
+    pub fn dispatch(&self, encoder: &mut CommandEncoder, dt: std::time::Duration, layer: u32) {
         let mut compute_pass = encoder.begin_compute_pass(&ComputePassDescriptor {
             label: Some("Waves data merge"),
             timestamp_writes: None,
@@ -184,11 +174,12 @@ impl WavesDataMergePipeline {
         let parameters = Parameters {
             lambda: self.lambda,
             delta_time: dt.as_secs_f32(),
+            layer: layer,
         };
 
         compute_pass.set_pipeline(&self.pipeline);
         compute_pass.set_bind_group(0, &self.textures_bind_group, &[]);
         compute_pass.set_push_constants(0, bytemuck::cast_slice(&[parameters]));
-        compute_pass.dispatch_workgroups(self.size / 16, self.size / 16, self.layers);
+        compute_pass.dispatch_workgroups(self.size / 16, self.size / 16, 1);
     }
 }
