@@ -33,19 +33,45 @@ pub enum Quality {
 
 pub struct OceanPlugin {
     quality: Quality,
+    params: OceanParams,
+    wind_speed: f32,
+    wind_direction: f32,
+    swell: f32,
 }
 
 impl Default for OceanPlugin {
     fn default() -> Self {
         Self {
             quality: Quality::Low,
+            params: OceanParams::default(),
+            wind_speed: 10.0,
+            wind_direction: 180.0,
+            swell: 0.3,
+        }
+    }
+}
+
+impl OceanPlugin {
+    pub fn calm() -> Self {
+        Self {
+            quality: Quality::Low,
+            params: OceanParams::calm(),
+            wind_speed: 3.0,
+            wind_direction: 180.0,
+            swell: 0.1,
         }
     }
 }
 
 #[derive(Resource, ExtractResource, Clone)]
 pub struct OceanSettings {
-    quality: Quality,
+    pub quality: Quality,
+    /// Wind speed in m/s - controls wave energy (default 10.0)
+    pub wind_speed: f32,
+    /// Wind direction in degrees (0-360, default 180.0)
+    pub wind_direction: f32,
+    /// Swell contribution from distant storms (0.0-1.0, default 0.3)
+    pub swell: f32,
 }
 
 /// Ocean rendering parameters that can be modified at runtime.
@@ -94,6 +120,33 @@ pub struct OceanParams {
     pub foam_color: Vec3,
     /// Ambient light color
     pub ambient_color: Vec3,
+}
+
+impl OceanParams {
+    pub fn calm() -> Self {
+        Self {
+            displacement_scale: 0.3,
+            normal_strength: 0.15,
+            foam_threshold: 1.8,
+            foam_multiplier: 0.5,
+            foam_tile_scale: 8.0,
+            roughness: 0.05,
+            light_intensity: 3.0,
+            sss_intensity: 0.6,
+            sun_direction: Vec3::new(0.3, 0.8, 0.2),
+            fog_color: fog::COLOR_DAY,
+            fog_start: 8192.0,
+            fog_end: 32768.0,
+            deep_color: ocean::DEEP,
+            shallow_color: ocean::SHALLOW,
+            sky_day: sky::REFLECTION_DAY,
+            sky_night: sky::REFLECTION_NIGHT,
+            sun_color: sun::COLOR_OCEAN,
+            sss_color: ocean::SSS,
+            foam_color: ocean::FOAM,
+            ambient_color: ocean::AMBIENT,
+        }
+    }
 }
 
 impl Default for OceanParams {
@@ -421,9 +474,12 @@ impl Plugin for OceanPlugin {
         embedded_asset!(app, strip_prefix, "./shaders/ocean_shader.wgsl");
         embedded_asset!(app, strip_prefix, "./textures/foam.png");
         // Insert default ocean parameters resource
-        app.init_resource::<OceanParams>();
+        app.insert_resource(self.params);
         app.insert_resource(OceanSettings {
             quality: self.quality,
+            wind_speed: self.wind_speed,
+            wind_direction: self.wind_direction,
+            swell: self.swell,
         });
 
         app.add_systems(Startup, (setup, OceanCamera::spawn_ocean).chain());
@@ -440,6 +496,9 @@ impl Plugin for OceanPlugin {
         let render_app = app.sub_app_mut(RenderApp);
         render_app.insert_resource(OceanSettings {
             quality: self.quality,
+            wind_speed: self.wind_speed,
+            wind_direction: self.wind_direction,
+            swell: self.swell,
         });
         // Run init_ocean_pipeline in ExtractCommands phase so it runs after extraction
         render_app.add_systems(
@@ -614,9 +673,9 @@ fn init_ocean_pipeline(
     };
     let ocean_params = OceanCascadeParameters {
         size: settings.quality as u32,
-        wind_speed: 10.0,
-        wind_direction: 180.0,
-        swell: 0.3,
+        wind_speed: settings.wind_speed,
+        wind_direction: settings.wind_direction,
+        swell: settings.swell,
     };
 
     let displacement_0_texture = render_assets.get(&ocean_images.displacement_0).unwrap();

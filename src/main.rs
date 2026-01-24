@@ -22,7 +22,7 @@ fn main() -> AppExit {
         .add_plugins(DefaultPlugins)
         .add_plugins(PlayerPlugin)
         .add_plugins(EntropyPlugin::<WyRand>::default())
-        .add_plugins(OceanPlugin::default())
+        .add_plugins(OceanPlugin::calm())
         .add_plugins(SkyPlugin)
         .add_plugins(FrameTimeDiagnosticsPlugin::default())
         .add_plugins(FpsOverlayPlugin::default())
