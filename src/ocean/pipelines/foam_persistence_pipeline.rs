@@ -125,9 +125,9 @@ impl FoamPersistencePipeline {
         });
 
         let parameters = Parameters {
-            decay_rate: 0.92,          // Foam decays slowly
-            foam_spawn_threshold: 1.2, // Match the ocean shader threshold
-            foam_spawn_strength: 1.0,  // Match the ocean shader multiplier
+            decay_rate: 0.95,
+            foam_spawn_threshold: 1.0,
+            foam_spawn_strength: 1.5,
             delta_time: dt.as_secs_f32(),
         };
 

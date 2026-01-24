@@ -77,7 +77,6 @@ pub struct InitialSpectrumPipeline {
 
 impl InitialSpectrumPipeline {
     pub fn init(
-        size: u32,
         wave_params: OceanSpectrumParameters,
         device: &RenderDevice,
         h0k_texture: &Texture,
@@ -85,8 +84,8 @@ impl InitialSpectrumPipeline {
         h0_texture: &Texture,
     ) -> Self {
         let texture_size = Extent3d {
-            width: size,
-            height: size,
+            width: wave_params.size,
+            height: wave_params.size,
             depth_or_array_layers: 1,
         };
 
@@ -211,7 +210,7 @@ impl InitialSpectrumPipeline {
             ],
         );
 
-        let noise_data = generate_noise_data(size as usize);
+        let noise_data = generate_noise_data(wave_params.size as usize);
 
         let shader = unsafe {
             device.create_shader_module(ShaderModuleDescriptor {
@@ -293,7 +292,7 @@ impl InitialSpectrumPipeline {
         );
 
         Self {
-            size,
+            size: wave_params.size,
             noise_data,
             texture_size,
             noise_texture,
@@ -357,7 +356,6 @@ impl InitialSpectrumPipeline {
 }
 
 fn generate_noise_data(size: usize) -> Vec<f32> {
-    use rand::prelude::*;
     use rand_distr::{Distribution, StandardNormal};
 
     let mut rng = rand::rng();

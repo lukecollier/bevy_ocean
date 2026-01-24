@@ -37,6 +37,8 @@ pub struct OceanPlugin {
     wind_speed: f32,
     wind_direction: f32,
     swell: f32,
+    choppiness: f32,
+    depth: f32,
 }
 
 impl Default for OceanPlugin {
@@ -47,6 +49,8 @@ impl Default for OceanPlugin {
             wind_speed: 10.0,
             wind_direction: 180.0,
             swell: 0.3,
+            choppiness: 0.8,
+            depth: 500.0,
         }
     }
 }
@@ -59,6 +63,8 @@ impl OceanPlugin {
             wind_speed: 3.0,
             wind_direction: 180.0,
             swell: 0.1,
+            choppiness: 0.4,
+            depth: 500.0,
         }
     }
 }
@@ -72,11 +78,15 @@ pub struct OceanSettings {
     pub wind_direction: f32,
     /// Swell contribution from distant storms (0.0-1.0, default 0.3)
     pub swell: f32,
+    /// Choppiness - horizontal displacement intensity (0.0-1.0, default 0.8)
+    pub choppiness: f32,
+    /// Water depth in meters - affects wave dispersion in shallow water (default 500.0)
+    pub depth: f32,
 }
 
 /// Ocean rendering parameters that can be modified at runtime.
 /// Changes to this resource will be reflected in the water simulation.
-#[derive(Resource, Clone, Copy, Debug, ShaderType)]
+#[derive(Resource, ExtractResource, Clone, Copy, Debug, ShaderType)]
 pub struct OceanParams {
     /// Scale of wave displacement (0.0 - 2.0, default 0.6)
     pub displacement_scale: f32,
@@ -125,9 +135,9 @@ pub struct OceanParams {
 impl OceanParams {
     pub fn calm() -> Self {
         Self {
-            displacement_scale: 0.3,
+            displacement_scale: 1.0,
             normal_strength: 0.15,
-            foam_threshold: 1.8,
+            foam_threshold: 1.3,
             foam_multiplier: 0.5,
             foam_tile_scale: 8.0,
             roughness: 0.05,
@@ -446,6 +456,9 @@ impl render_graph::Node for OceanNode {
         let Some(pipeline) = world.get_resource::<OceanPipeline>() else {
             return Ok(());
         };
+        let Some(ocean_params) = world.get_resource::<OceanParams>() else {
+            return Ok(());
+        };
         let render_queue = world.resource::<RenderQueue>();
         let time = world.resource::<Time>();
         let mut encoder = render_context.command_encoder();
@@ -480,6 +493,8 @@ impl Plugin for OceanPlugin {
             wind_speed: self.wind_speed,
             wind_direction: self.wind_direction,
             swell: self.swell,
+            choppiness: self.choppiness,
+            depth: self.depth,
         });
 
         app.add_systems(Startup, (setup, OceanCamera::spawn_ocean).chain());
@@ -492,6 +507,7 @@ impl Plugin for OceanPlugin {
 
         app.add_plugins((ExtractResourcePlugin::<OceanImages>::default(),));
         app.add_plugins((ExtractResourcePlugin::<OceanSettings>::default(),));
+        app.add_plugins((ExtractResourcePlugin::<OceanParams>::default(),));
 
         let render_app = app.sub_app_mut(RenderApp);
         render_app.insert_resource(OceanSettings {
@@ -499,7 +515,10 @@ impl Plugin for OceanPlugin {
             wind_speed: self.wind_speed,
             wind_direction: self.wind_direction,
             swell: self.swell,
+            choppiness: self.choppiness,
+            depth: self.depth,
         });
+        render_app.insert_resource(self.params);
         // Run init_ocean_pipeline in ExtractCommands phase so it runs after extraction
         render_app.add_systems(
             Render,
@@ -676,6 +695,8 @@ fn init_ocean_pipeline(
         wind_speed: settings.wind_speed,
         wind_direction: settings.wind_direction,
         swell: settings.swell,
+        choppiness: settings.choppiness,
+        depth: settings.depth,
     };
 
     let displacement_0_texture = render_assets.get(&ocean_images.displacement_0).unwrap();

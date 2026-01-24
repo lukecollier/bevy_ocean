@@ -18,6 +18,10 @@ pub struct OceanCascadeParameters {
     pub wind_speed: f32,
     pub wind_direction: f32,
     pub swell: f32,
+    /// Choppiness/lambda - horizontal displacement intensity (0.0-1.0, default 0.8)
+    pub choppiness: f32,
+    /// Water depth in meters - affects wave dispersion in shallow water (default 500.0)
+    pub depth: f32,
 }
 
 impl OceanCascade {
@@ -40,6 +44,8 @@ impl OceanCascade {
             wind_speed: params.wind_speed,
             wind_direction: params.wind_direction,
             swell: params.swell,
+            delta: params.choppiness,
+            depth: params.depth,
             ..Default::default()
         };
 

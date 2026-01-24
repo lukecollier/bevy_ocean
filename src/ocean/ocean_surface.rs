@@ -100,7 +100,6 @@ impl OceanSurface {
         });
 
         let initial_spectrum_pipeline = InitialSpectrumPipeline::init(
-            size,
             params,
             device,
             &h0k_texture,
