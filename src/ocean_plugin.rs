@@ -523,7 +523,7 @@ impl render_graph::Node for OceanNode {
         let Some(pipeline) = world.get_resource::<OceanPipeline>() else {
             return Ok(());
         };
-        let Some(ocean_params) = world.get_resource::<OceanParams>() else {
+        let Some(_ocean_params) = world.get_resource::<OceanParams>() else {
             return Ok(());
         };
         let render_queue = world.resource::<RenderQueue>();

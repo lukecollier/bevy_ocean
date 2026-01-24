@@ -2,6 +2,7 @@ use bevy::render::render_resource::CommandEncoder;
 use bevy::render::render_resource::Texture;
 use bevy::render::renderer::RenderDevice;
 use bevy::render::renderer::RenderQueue;
+use log::info;
 
 use crate::ocean::OceanSpectrumParameters;
 use crate::ocean::OceanSurface;

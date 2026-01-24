@@ -132,7 +132,7 @@ fn vertex(in: Vertex) -> OceanVertexOutput {
 }
 
 // Debug modes
-const DEBUG_JACOBIAN: bool = true;
+const DEBUG_JACOBIAN: bool = false;
 const DEBUG_FOAM_TEXTURE: bool = false;
 
 // PBR helper functions

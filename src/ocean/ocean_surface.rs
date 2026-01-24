@@ -34,7 +34,6 @@ impl OceanSurface {
         device: &RenderDevice,
         size: u32,
         params: OceanSpectrumParameters,
-        // these 3 are actually going to be texture arrays
         displacement_texture: &Texture,
         derivatives_texture: &Texture,
         foam_persistence_texture: &Texture,
