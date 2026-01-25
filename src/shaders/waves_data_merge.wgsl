@@ -1,9 +1,11 @@
+// Input textures (arrays - one layer per cascade)
 @group(0) @binding(0)
-var amp_dx_dz__dy_dxz_texture: texture_storage_2d<rgba32float, read>;
+var amp_dx_dz__dy_dxz_texture: texture_storage_2d_array<rgba32float, read>;
 
 @group(0) @binding(1)
-var amp_dyx_dyz__dxx_dzz_texture: texture_storage_2d<rgba32float, read>;
+var amp_dyx_dyz__dxx_dzz_texture: texture_storage_2d_array<rgba32float, read>;
 
+// Output textures (arrays)
 @group(0) @binding(2)
 var out_displacement: texture_storage_2d_array<rgba32float, read_write>;
 
@@ -13,25 +15,23 @@ var out_derivatives: texture_storage_2d_array<rgba32float, write>;
 struct Parameters {
   lambda: f32,
   delta_time: f32,
-  layer: u32
 };
 
 var<push_constant> params: Parameters;
 
-@compute @workgroup_size(16, 16)
+@compute @workgroup_size(16, 16, 1)
 fn merge(
     @builtin(global_invocation_id) id: vec3<u32>,
 ) {
     let coords = vec2<i32>(id.xy);
-    // let layer = id.z;
-    let layer = params.layer;
+    let layer = id.z;
     let l = params.lambda;
 
-    let dx_dz_dy_dxz = textureLoad(amp_dx_dz__dy_dxz_texture, coords);
+    let dx_dz_dy_dxz = textureLoad(amp_dx_dz__dy_dxz_texture, coords, layer);
     let dx_dz = dx_dz_dy_dxz.xy;
     let dy_dxz = dx_dz_dy_dxz.zw;
 
-    let dyx_dyz_dxx_dzz = textureLoad(amp_dyx_dyz__dxx_dzz_texture, coords);
+    let dyx_dyz_dxx_dzz = textureLoad(amp_dyx_dyz__dxx_dzz_texture, coords, layer);
     let dyx_dyz = dyx_dyz_dxx_dzz.xy;
     let dxx_dzz = dyx_dyz_dxx_dzz.zw;
 
@@ -58,13 +58,12 @@ fn merge(
 const PI: f32 = 3.14159265358979323846264338;
 const sigma = 8.0;
 
-@compute @workgroup_size(16, 16)
+@compute @workgroup_size(16, 16, 1)
 fn blur_turbulence(
     @builtin(global_invocation_id) id: vec3<u32>,
 ) {
     let coords = vec2<i32>(id.xy);
-    // let layer = id.z;
-    let layer = params.layer;
+    let layer = id.z;
 
     var value = 0.0;
     for (var x = -4; x <= 4; x = x + 1) {
