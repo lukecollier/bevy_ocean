@@ -80,8 +80,8 @@ const NEAR_DIST_THRESHOLD: f32 = 300.0;   // Include cascade 2 when closer than 
 struct OceanVertexOutput {
     @builtin(position) position: vec4<f32>,
     @location(0) world_position: vec4<f32>,
-    @location(1) base_uv: vec2<f32>,      // UV for cascade 0
-    @location(2) lod_factors: vec3<f32>, // LOD scale factors for each cascade
+    @location(1) original_xz: vec2<f32>,  // Original world XZ before displacement (for UV calculation)
+    @location(2) lod_factors: vec3<f32>,  // LOD scale factors for each cascade
     @location(3) jacobian: f32,
 }
 
@@ -93,23 +93,25 @@ fn vertex(in: Vertex) -> OceanVertexOutput {
         vec4<f32>(in.position, 1.0)
     );
 
+    // Store original world XZ before displacement (for UV calculations in fragment shader)
+    let original_xz = world_pos.xz;
+
     // Calculate view distance for LOD-based cascade blending
     let camera_pos = view.world_position;
-    let view_dist = min(length(camera_pos - world_pos.xyz), 0.01);
+    let view_dist = max(length(camera_pos - world_pos.xyz), 0.01);
 
     var total_displacement = vec3(0.);
     var jacobian = 0.;
     // Sample displacement for all cascades
     for (var layer = 0u; layer < NUMBER_OF_CASCADES; layer++) {
-      // Distance thresholds for including cascades
+      // Distance thresholds for including cascades (lod_cutoff of 0 means always include)
       let cascade_param = params.cascades[layer];
-      if (view_dist < cascade_param.lod_cutoff) {
+      if (cascade_param.lod_cutoff == 0.0 || view_dist < cascade_param.lod_cutoff) {
         // Calculate LOD scales based on distance
         // Each cascade fades based on: min(LOD_SCALE * LENGTH_SCALE / view_dist, 1.0)
         let lod_c0 = min(LOD_SCALE * cascade_param.length_scale / view_dist, 1.0);
-        // Calculate UVs from world position for each cascade
-        // This allows meshes to tile seamlessly and scale independently
-        let uv = world_pos.xz / cascade_param.length_scale;
+        // Calculate UVs from ORIGINAL world position (before displacement)
+        let uv = original_xz / cascade_param.length_scale;
         let d0 = textureSampleLevel(t_displacements, s_ocean, uv, layer, 0.0);
         total_displacement = total_displacement + d0.xyz * lod_c0;
         jacobian = jacobian + d0.w * cascade_param.jacobian_strength;
@@ -121,19 +123,20 @@ fn vertex(in: Vertex) -> OceanVertexOutput {
     world_pos.y = world_pos.y + total_displacement.y * params.displacement_scale;
     world_pos.z = world_pos.z + total_displacement.z * params.displacement_scale;
 
-    // Pass LOD factors to fragment shader for per-pixel normal calculation
+    // Pass data to fragment shader
     var out: OceanVertexOutput;
     out.world_position = world_pos;
     out.position = position_world_to_clip(world_pos.xyz);
-    out.base_uv = world_pos.xz / params.cascades[0].length_scale;
+    out.original_xz = original_xz;  // Pass original position for UV calculations
     out.jacobian = jacobian;
 
     return out;
 }
 
-// Debug modes
+// Debug modes - set to true to visualize different aspects
 const DEBUG_JACOBIAN: bool = false;
 const DEBUG_FOAM_TEXTURE: bool = false;
+const DEBUG_DISPLACEMENT: bool = false;  // Visualize raw displacement values per cascade
 
 // PBR helper functions
 fn distribution_ggx(n: vec3<f32>, h: vec3<f32>, roughness: f32) -> f32 {
@@ -189,7 +192,7 @@ fn fragment(mesh: OceanVertexOutput) -> @location(0) vec4<f32> {
     // Get view direction (from fragment to camera)
     let camera_pos = view.world_position;
     let view_dir = normalize(camera_pos - mesh.world_position.xyz);
-    let view_dist = min(length(camera_pos - mesh.world_position.xyz), 0.01);
+    let view_dist = max(length(camera_pos - mesh.world_position.xyz), 0.01);
 
     // Sample derivatives per-pixel for smooth lighting (always sample all, blend with LOD)
 
@@ -200,7 +203,8 @@ fn fragment(mesh: OceanVertexOutput) -> @location(0) vec4<f32> {
       let cascade_param = params.cascades[layer];
       // Per-pixel normal calculation: sample derivatives and blend with LOD factors
       let lod_c = min(LOD_SCALE * cascade_param.length_scale / view_dist, 1.0);
-      let uv = world_pos.xz / params.cascades[layer].length_scale;
+      // Use original (pre-displacement) position for UVs, matching old shader behavior
+      let uv = mesh.original_xz / params.cascades[layer].length_scale;
       let deriv = textureSample(t_derivatives, s_ocean, uv, layer);
 
       // Blend derivatives based on LOD factors
@@ -211,12 +215,11 @@ fn fragment(mesh: OceanVertexOutput) -> @location(0) vec4<f32> {
       let foam_persistent = textureSample(t_foam_persistences, s_ocean, uv, layer).r;
 
       // Blend persistent foam from all cascades with distance-based weighting
-      let camera_pos_frag = view.world_position;
-      let view_dist_frag = length(camera_pos_frag - mesh.world_position.xyz);
-      let lod_foam = min(LOD_SCALE * cascade_param.length_scale / view_dist_frag, 1.0);
+      // Use view_dist (with max protection) for consistent LOD calculations
+      let lod_foam = min(LOD_SCALE * cascade_param.length_scale / view_dist, 1.0);
 
-      // Combine persistent foam from cascades
-      if (view_dist_frag < cascade_param.lod_cutoff) {
+      // Combine persistent foam from cascades (lod_cutoff of 0 means always include)
+      if (cascade_param.lod_cutoff == 0.0 || view_dist < cascade_param.lod_cutoff) {
         base_turbulence = base_turbulence + foam_persistent * lod_foam * cascade_param.foam_strength;
       }
 
@@ -227,8 +230,8 @@ fn fragment(mesh: OceanVertexOutput) -> @location(0) vec4<f32> {
       // Use s_ocean sampler (configured with repeat mode) for foam texture
       let noise = textureSample(t_foam, s_ocean, foam_uv).r;
 
-      // Combine noise at different scales (like the original's multi-cascade approach)
-      foam_noise = foam_noise + (noise * cascade_param.foam_strength) * lod_c;
+      // Combine noise at different scales (matching reference - no LOD scaling on noise)
+      foam_noise = foam_noise + noise * cascade_param.foam_strength;
     }
 
     // Compute normal from blended derivatives (per-pixel)
@@ -324,6 +327,27 @@ fn fragment(mesh: OceanVertexOutput) -> @location(0) vec4<f32> {
     // Debug mode: visualize foam noise
     if (DEBUG_FOAM_TEXTURE) {
       return vec4(vec3(foam_noise), 1.0);
+    }
+
+    // Debug mode: visualize displacement per cascade
+    if (DEBUG_DISPLACEMENT) {
+      // Sample displacement from each cascade separately for visualization
+      var debug_color = vec3(0.0);
+      for (var layer = 0u; layer < NUMBER_OF_CASCADES; layer++) {
+        let cascade_param = params.cascades[layer];
+        let uv = mesh.original_xz / cascade_param.length_scale;
+        let d = textureSample(t_displacements, s_ocean, uv, layer);
+        // Map displacement.y (vertical) to color channel per cascade
+        // Cascade 0 = Red, Cascade 1 = Green, Cascade 2 = Blue
+        if (layer == 0u) {
+          debug_color.r = saturate(d.y * 0.1 + 0.5);  // Normalize around 0.5
+        } else if (layer == 1u) {
+          debug_color.g = saturate(d.y * 0.2 + 0.5);
+        } else if (layer == 2u) {
+          debug_color.b = saturate(d.y * 0.5 + 0.5);
+        }
+      }
+      return vec4(debug_color, 1.0);
     }
 
     // Distance fog - blend to horizon color at distance

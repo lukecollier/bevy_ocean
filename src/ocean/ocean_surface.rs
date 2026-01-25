@@ -11,7 +11,6 @@ use bevy::render::renderer::RenderQueue;
 use crate::ocean::ocean_parameters::OceanSpectrumParameters;
 use crate::ocean::pipelines::FFT;
 use crate::ocean::pipelines::FoamPersistencePipeline;
-use crate::ocean::pipelines::GenerateMipmapsPipeline;
 use crate::ocean::pipelines::InitialSpectrumPipeline;
 use crate::ocean::pipelines::TimeDependentSpectrumPipeline;
 use crate::ocean::pipelines::WavesDataMergePipeline;

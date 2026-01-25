@@ -301,8 +301,8 @@ impl<const N: u32> Material for OceanMaterial<N> {
         _layout: &bevy::mesh::MeshVertexBufferLayoutRef,
         _key: bevy::pbr::MaterialPipelineKey<Self>,
     ) -> Result<(), SpecializedMeshPipelineError> {
-        if (N > 8) {
-            panic!("cacasdes go upto a maximum of 8");
+        if N > 8 {
+            panic!("cascades go up to a maximum of 8");
         }
         if let Some(fragment) = &mut descriptor.fragment {
             fragment
@@ -738,7 +738,7 @@ fn init_ocean_pipeline(
     mut commands: Commands,
     render_device: Res<RenderDevice>,
     // todo: We should use the cache and the bevy things I GUESS
-    pipeline_cache: Res<PipelineCache>,
+    _pipeline_cache: Res<PipelineCache>,
     ocean_images: Option<Res<OceanImages>>,
     render_assets: Res<RenderAssets<GpuImage>>,
     settings: Res<OceanSettings>,

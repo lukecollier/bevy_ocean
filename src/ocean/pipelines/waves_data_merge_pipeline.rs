@@ -136,6 +136,7 @@ impl WavesDataMergePipeline {
                     binding: 2,
                     resource: BindingResource::TextureView(&displacement_texture.create_view(
                         &TextureViewDescriptor {
+                            dimension: Some(TextureViewDimension::D2Array),
                             base_mip_level: 0,
                             mip_level_count: Some(1),
                             ..Default::default()
@@ -146,6 +147,7 @@ impl WavesDataMergePipeline {
                     binding: 3,
                     resource: BindingResource::TextureView(&derivatives_texture.create_view(
                         &TextureViewDescriptor {
+                            dimension: Some(TextureViewDimension::D2Array),
                             base_mip_level: 0,
                             mip_level_count: Some(1),
                             ..Default::default()

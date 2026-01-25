@@ -1,6 +1,6 @@
 use bevy::{asset::embedded_asset, prelude::*, render::render_resource::*, shader::ShaderRef};
 
-use crate::colors::{ocean, scatter, sky, sun, water};
+use crate::colors::{scatter, sky, sun, water};
 
 const SKY_SHADER_PATH: &str = "embedded://bevy_ocean/shaders/sky_shader.wgsl";
 

@@ -96,6 +96,7 @@ impl FoamPersistencePipeline {
                     binding: 0,
                     resource: BindingResource::TextureView(&displacement_texture.create_view(
                         &TextureViewDescriptor {
+                            dimension: Some(TextureViewDimension::D2Array),
                             base_mip_level: 0,
                             mip_level_count: Some(1),
                             ..Default::default()
@@ -106,6 +107,7 @@ impl FoamPersistencePipeline {
                     binding: 1,
                     resource: BindingResource::TextureView(&foam_persistence_texture.create_view(
                         &TextureViewDescriptor {
+                            dimension: Some(TextureViewDimension::D2Array),
                             ..Default::default()
                         },
                     )),
