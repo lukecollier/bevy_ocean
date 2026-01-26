@@ -3,7 +3,6 @@ use bevy::{
     ecs::schedule::common_conditions::{not, resource_exists},
     image::{ImageAddressMode, ImageFilterMode, ImageSampler, ImageSamplerDescriptor},
     light::{NotShadowCaster, NotShadowReceiver},
-    pbr::wireframe::Wireframe,
     prelude::*,
     render::{
         Render, RenderApp,
@@ -46,7 +45,7 @@ pub struct OceanPlugin {
 impl Default for OceanPlugin {
     fn default() -> Self {
         Self {
-            quality: Quality::Low,
+            quality: Quality::VeryLow,
             params: OceanParams::default(),
             wind_speed: 10.0,
             wind_direction: 180.0,
@@ -60,7 +59,7 @@ impl Default for OceanPlugin {
 impl OceanPlugin {
     pub fn calm() -> Self {
         Self {
-            quality: Quality::Low,
+            quality: Quality::VeryLow,
             params: OceanParams::calm(),
             wind_speed: 3.0,
             wind_direction: 180.0,
@@ -356,10 +355,10 @@ impl OceanCamera {
         // subdivisions = cells along the full outer edge (like a plane)
         // todo: These should change depending on quality too
         let mut lod_rings = [
-            (0.0, 1024.0, 256),    // Ring 0: Center square, highest detail
-            (1024.0, 4092., 128),  // Ring 1: Medium detail frame
-            (4092.0, 8192.0, 64),  // Ring 2: Low detail frame
-            (8192.0, 32768.0, 32), // Ring 3: Very low detail, extends to horizon
+            (0.0, 1024.0, 512),     // Ring 0: Center square, highest detail
+            (1024.0, 4092., 512),   // Ring 1: Medium detail frame
+            (4092.0, 8192.0, 512),  // Ring 2: Low detail frame
+            (8192.0, 32768.0, 512), // Ring 3: Very low detail, extends to horizon
         ]
         .into_iter();
 
@@ -373,7 +372,6 @@ impl OceanCamera {
             let cell_size = (outer_half * 2.0) / subdivisions as f32;
 
             commands.spawn((
-                Wireframe,
                 Mesh3d(meshes.add(mesh)),
                 MeshMaterial3d(ocean_material.clone()),
                 Transform::from_translation(Vec3::ZERO),
@@ -391,7 +389,6 @@ impl OceanCamera {
             let cell_size = (outer_half * 2.0) / subdivisions as f32;
 
             commands.spawn((
-                Wireframe,
                 Mesh3d(meshes.add(mesh)),
                 MeshMaterial3d(ocean_material.clone()),
                 Transform::from_translation(Vec3::ZERO),
