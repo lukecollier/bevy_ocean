@@ -1,17 +1,17 @@
 @group(0) @binding(0)
-var h0_texture: texture_storage_2d<rgba32float, read>;
+var h0_texture: texture_storage_2d_array<rgba32float, read>;
 
 @group(0) @binding(1)
-var waves_data_texture: texture_storage_2d<rgba32float, read>;
+var waves_data_texture: texture_storage_2d_array<rgba32float, read>;
 
 @group(0) @binding(2)
-var amp_dx_dz__dy_dxz_texture: texture_storage_2d<rgba32float, write>;
+var amp_dx_dz__dy_dxz_texture: texture_storage_2d_array<rgba32float, write>;
 
 @group(0) @binding(3)
-var amp_dyx_dyz__dxx_dzz_texture: texture_storage_2d<rgba32float, write>;
+var amp_dyx_dyz__dxx_dzz_texture: texture_storage_2d_array<rgba32float, write>;
 
 struct TimeDependentSpectrumPushParameters {
-    time: f32
+    time: f32,
 };
 
 var<push_constant> params: TimeDependentSpectrumPushParameters;
@@ -20,14 +20,15 @@ fn complex_mult(a: vec2<f32>, b: vec2<f32>) -> vec2<f32> {
     return vec2<f32>(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x);
 }
 
-@compute @workgroup_size(16, 16)
+@compute @workgroup_size(16, 16, 1)
 fn calculate_amplitudes(
     @builtin(global_invocation_id) id: vec3<u32>,
 ) {
     let coords = vec2<i32>(id.xy);
+    let layer = id.z;
 
-    let wave = textureLoad(waves_data_texture, coords);
-    let h0 = textureLoad(h0_texture, coords);
+    let wave = textureLoad(waves_data_texture, coords, layer);
+    let h0 = textureLoad(h0_texture, coords, layer);
 
     let phase = wave.w * params.time;
     let exponent = vec2<f32>(cos(phase), sin(phase));
@@ -66,6 +67,6 @@ fn calculate_amplitudes(
         displacement_x_dx.y + displacement_z_dz.x,
     );
 
-    textureStore(amp_dx_dz__dy_dxz_texture, coords, vec4<f32>(dx_dz, dy_dxz));
-    textureStore(amp_dyx_dyz__dxx_dzz_texture, coords, vec4<f32>(dyx_dyz, dxx_dzz));
+    textureStore(amp_dx_dz__dy_dxz_texture, coords, layer, vec4<f32>(dx_dz, dy_dxz));
+    textureStore(amp_dyx_dyz__dxx_dzz_texture, coords, layer, vec4<f32>(dyx_dyz, dxx_dzz));
 }

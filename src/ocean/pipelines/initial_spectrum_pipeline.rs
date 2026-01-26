@@ -18,11 +18,13 @@ const WG_COUNT: u32 = 16;
 #[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 struct Parameters {
     size: u32,
+    layer: u32,
     length_scale: f32,
     cut_off_low: f32,
     cut_off_high: f32,
     gravity_acceleration: f32,
     depth: f32,
+    _padding: f32,
 }
 
 #[repr(C)]
@@ -78,6 +80,7 @@ pub struct InitialSpectrumPipeline {
 impl InitialSpectrumPipeline {
     pub fn init(
         wave_params: OceanSpectrumParameters,
+        layer: u32,
         device: &RenderDevice,
         h0k_texture: &Texture,
         waves_data_texture: &Texture,
@@ -91,11 +94,13 @@ impl InitialSpectrumPipeline {
 
         let parameters = Parameters {
             size: wave_params.size,
+            layer,
             length_scale: wave_params.length_scale,
             cut_off_low: wave_params.cut_off_low,
             cut_off_high: wave_params.cut_off_high,
             gravity_acceleration: wave_params.gravity_acceleration,
             depth: wave_params.depth,
+            _padding: 0.0,
         };
 
         let spectrum_parameters = SpectrumParamers::from_ocean_parameters(wave_params);
@@ -167,6 +172,7 @@ impl InitialSpectrumPipeline {
         let texture_bind_group_layout = device.create_bind_group_layout(
             "IS - Texture bind group layout",
             &[
+                // noise texture (stays 2D - same noise for all layers)
                 BindGroupLayoutEntry {
                     binding: 0,
                     visibility: ShaderStages::COMPUTE,
@@ -177,31 +183,34 @@ impl InitialSpectrumPipeline {
                     },
                     count: None,
                 },
+                // h0_texture (array)
                 BindGroupLayoutEntry {
                     binding: 1,
                     visibility: ShaderStages::COMPUTE,
                     ty: BindingType::StorageTexture {
-                        view_dimension: TextureViewDimension::D2,
+                        view_dimension: TextureViewDimension::D2Array,
                         format: TextureFormat::Rgba32Float,
                         access: StorageTextureAccess::ReadWrite,
                     },
                     count: None,
                 },
+                // waves_data_texture (array)
                 BindGroupLayoutEntry {
                     binding: 2,
                     visibility: ShaderStages::COMPUTE,
                     ty: BindingType::StorageTexture {
-                        view_dimension: TextureViewDimension::D2,
+                        view_dimension: TextureViewDimension::D2Array,
                         format: TextureFormat::Rgba32Float,
                         access: StorageTextureAccess::ReadWrite,
                     },
                     count: None,
                 },
+                // h0k_texture (array)
                 BindGroupLayoutEntry {
                     binding: 3,
                     visibility: ShaderStages::COMPUTE,
                     ty: BindingType::StorageTexture {
-                        view_dimension: TextureViewDimension::D2,
+                        view_dimension: TextureViewDimension::D2Array,
                         format: TextureFormat::Rgba32Float,
                         access: StorageTextureAccess::ReadWrite,
                     },
@@ -265,6 +274,7 @@ impl InitialSpectrumPipeline {
                     binding: 1,
                     resource: BindingResource::TextureView(&h0_texture.create_view(
                         &TextureViewDescriptor {
+                            dimension: Some(TextureViewDimension::D2Array),
                             format: Some(TextureFormat::Rgba32Float),
                             ..Default::default()
                         },
@@ -274,6 +284,7 @@ impl InitialSpectrumPipeline {
                     binding: 2,
                     resource: BindingResource::TextureView(&waves_data_texture.create_view(
                         &TextureViewDescriptor {
+                            dimension: Some(TextureViewDimension::D2Array),
                             format: Some(TextureFormat::Rgba32Float),
                             ..Default::default()
                         },
@@ -283,6 +294,7 @@ impl InitialSpectrumPipeline {
                     binding: 3,
                     resource: BindingResource::TextureView(&h0k_texture.create_view(
                         &TextureViewDescriptor {
+                            dimension: Some(TextureViewDimension::D2Array),
                             format: Some(TextureFormat::Rgba32Float),
                             ..Default::default()
                         },

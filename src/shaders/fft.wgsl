@@ -2,22 +2,22 @@
 var precompute_buffer: texture_storage_2d<rgba32float, read_write>;
 
 @group(0) @binding(1)
-var buffer_a_0: texture_storage_2d<rgba32float, read_write>;
+var buffer_a_0: texture_storage_2d_array<rgba32float, read_write>;
 
 @group(0) @binding(2)
-var buffer_a_1: texture_storage_2d<rgba32float, read_write>;
+var buffer_a_1: texture_storage_2d_array<rgba32float, read_write>;
 
 @group(0) @binding(3)
-var buffer_b_0: texture_storage_2d<rgba32float, read_write>;
+var buffer_b_0: texture_storage_2d_array<rgba32float, read_write>;
 
 @group(0) @binding(4)
-var buffer_b_1: texture_storage_2d<rgba32float, read_write>;
+var buffer_b_1: texture_storage_2d_array<rgba32float, read_write>;
 
 
 struct Params {
   ping_pong: u32,
   step: u32,
-  size: u32
+  size: u32,
 };
 
 var<push_constant> params: Params;
@@ -54,10 +54,13 @@ fn calculat_twiddle_factors_and_input_indices(
     );
 }
 
-@compute @workgroup_size(16, 16)
+@compute @workgroup_size(16, 16, 1)
 fn horizontal_step_inverse_fft(
     @builtin(global_invocation_id) id: vec3<u32>,
 ) {
+    let coords = vec2<i32>(id.xy);
+    let layer = id.z;
+
     let data = textureLoad(
         precompute_buffer,
         vec2<i32>(i32(params.step), i32(id.x))
@@ -69,12 +72,14 @@ fn horizontal_step_inverse_fft(
         {
             let bx = textureLoad(
                 buffer_a_0,
-                vec2<i32>(input_indices.x, i32(id.y))
+                vec2<i32>(input_indices.x, i32(id.y)),
+                layer
             );
 
             let by = textureLoad(
                 buffer_a_0,
                 vec2<i32>(input_indices.y, i32(id.y)),
+                layer
             );
 
             let bx0 = bx.xy;
@@ -87,20 +92,23 @@ fn horizontal_step_inverse_fft(
 
             textureStore(
                 buffer_a_1,
-                vec2<i32>(id.xy),
+                coords,
+                layer,
                 vec4<f32>(res0, res1),
             );
         }
 
-            {
+        {
             let bx = textureLoad(
                 buffer_b_0,
-                vec2<i32>(input_indices.x, i32(id.y))
+                vec2<i32>(input_indices.x, i32(id.y)),
+                layer
             );
 
             let by = textureLoad(
                 buffer_b_0,
                 vec2<i32>(input_indices.y, i32(id.y)),
+                layer
             );
 
             let bx0 = bx.xy;
@@ -113,20 +121,23 @@ fn horizontal_step_inverse_fft(
 
             textureStore(
                 buffer_b_1,
-                vec2<i32>(id.xy),
+                coords,
+                layer,
                 vec4<f32>(res0, res1),
             );
         }
     } else {
-            {
+        {
             let bx = textureLoad(
                 buffer_a_1,
                 vec2<i32>(input_indices.x, i32(id.y)),
+                layer
             );
 
             let by = textureLoad(
                 buffer_a_1,
                 vec2<i32>(input_indices.y, i32(id.y)),
+                layer
             );
 
             let bx0 = bx.xy;
@@ -139,7 +150,8 @@ fn horizontal_step_inverse_fft(
 
             textureStore(
                 buffer_a_0,
-                vec2<i32>(id.xy),
+                coords,
+                layer,
                 vec4<f32>(res0, res1),
             );
         }
@@ -148,11 +160,13 @@ fn horizontal_step_inverse_fft(
             let bx = textureLoad(
                 buffer_b_1,
                 vec2<i32>(input_indices.x, i32(id.y)),
+                layer
             );
 
             let by = textureLoad(
                 buffer_b_1,
                 vec2<i32>(input_indices.y, i32(id.y)),
+                layer
             );
 
             let bx0 = bx.xy;
@@ -165,17 +179,21 @@ fn horizontal_step_inverse_fft(
 
             textureStore(
                 buffer_b_0,
-                vec2<i32>(id.xy),
+                coords,
+                layer,
                 vec4<f32>(res0, res1),
             );
         }
     }
 }
 
-@compute @workgroup_size(16, 16)
+@compute @workgroup_size(16, 16, 1)
 fn vertical_step_inverse_fft(
     @builtin(global_invocation_id) id: vec3<u32>,
 ) {
+    let coords = vec2<i32>(id.xy);
+    let layer = id.z;
+
     let data = textureLoad(
         precompute_buffer,
         vec2<i32>(i32(params.step), i32(id.y))
@@ -187,12 +205,14 @@ fn vertical_step_inverse_fft(
         {
             let bx = textureLoad(
                 buffer_a_0,
-                vec2<i32>(i32(id.x), input_indices.x)
+                vec2<i32>(i32(id.x), input_indices.x),
+                layer
             );
 
             let by = textureLoad(
                 buffer_a_0,
                 vec2<i32>(i32(id.x), input_indices.y),
+                layer
             );
 
             let bx0 = bx.xy;
@@ -205,7 +225,8 @@ fn vertical_step_inverse_fft(
 
             textureStore(
                 buffer_a_1,
-                vec2<i32>(id.xy),
+                coords,
+                layer,
                 vec4<f32>(res0, res1),
             );
         }
@@ -213,12 +234,14 @@ fn vertical_step_inverse_fft(
         {
             let bx = textureLoad(
                 buffer_b_0,
-                vec2<i32>(i32(id.x), input_indices.x)
+                vec2<i32>(i32(id.x), input_indices.x),
+                layer
             );
 
             let by = textureLoad(
                 buffer_b_0,
                 vec2<i32>(i32(id.x), input_indices.y),
+                layer
             );
 
             let bx0 = bx.xy;
@@ -231,7 +254,8 @@ fn vertical_step_inverse_fft(
 
             textureStore(
                 buffer_b_1,
-                vec2<i32>(id.xy),
+                coords,
+                layer,
                 vec4<f32>(res0, res1),
             );
         }
@@ -239,12 +263,14 @@ fn vertical_step_inverse_fft(
         {
             let bx = textureLoad(
                 buffer_a_1,
-                vec2<i32>(i32(id.x), input_indices.x)
+                vec2<i32>(i32(id.x), input_indices.x),
+                layer
             );
 
             let by = textureLoad(
                 buffer_a_1,
                 vec2<i32>(i32(id.x), input_indices.y),
+                layer
             );
 
             let bx0 = bx.xy;
@@ -257,7 +283,8 @@ fn vertical_step_inverse_fft(
 
             textureStore(
                 buffer_a_0,
-                vec2<i32>(id.xy),
+                coords,
+                layer,
                 vec4<f32>(res0, res1),
             );
         }
@@ -265,12 +292,14 @@ fn vertical_step_inverse_fft(
         {
             let bx = textureLoad(
                 buffer_b_1,
-                vec2<i32>(i32(id.x), input_indices.x)
+                vec2<i32>(i32(id.x), input_indices.x),
+                layer
             );
 
             let by = textureLoad(
                 buffer_b_1,
                 vec2<i32>(i32(id.x), input_indices.y),
+                layer
             );
 
             let bx0 = bx.xy;
@@ -283,79 +312,99 @@ fn vertical_step_inverse_fft(
 
             textureStore(
                 buffer_b_0,
-                vec2<i32>(id.xy),
+                coords,
+                layer,
                 vec4<f32>(res0, res1),
             );
         }
     }
 }
 
-@compute @workgroup_size(16, 16)
+@compute @workgroup_size(16, 16, 1)
 fn permute(
     @builtin(global_invocation_id) id: vec3<u32>,
 ) {
+    let coords = vec2<i32>(id.xy);
+    let layer = id.z;
+
     let b0 = textureLoad(
         buffer_a_0,
-        vec2<i32>(id.xy),
+        coords,
+        layer,
     );
 
     textureStore(
         buffer_a_0,
-        vec2<i32>(id.xy),
+        coords,
+        layer,
         b0 * (1.0 - 2.0 * f32((id.x + id.y) % 2u)),
     );
 
     let bb = textureLoad(
         buffer_b_0,
-        vec2<i32>(id.xy),
+        coords,
+        layer,
     );
 
     textureStore(
         buffer_b_0,
-        vec2<i32>(id.xy),
+        coords,
+        layer,
         bb * (1.0 - 2.0 * f32((id.x + id.y) % 2u)),
     );
 }
 
-@compute @workgroup_size(16, 16)
+@compute @workgroup_size(16, 16, 1)
 fn swap(
     @builtin(global_invocation_id) id: vec3<u32>,
 ) {
+    let coords = vec2<i32>(id.xy);
+    let layer = id.z;
+
     let a1 = textureLoad(
         buffer_a_1,
-        vec2<i32>(id.xy),
+        coords,
+        layer,
     );
 
     textureStore(
         buffer_a_0,
-        vec2<i32>(id.xy),
+        coords,
+        layer,
         a1,
     );
 
     let b1 = textureLoad(
         buffer_b_1,
-        vec2<i32>(id.xy),
+        coords,
+        layer,
     );
 
     textureStore(
         buffer_b_0,
-        vec2<i32>(id.xy),
+        coords,
+        layer,
         b1,
     );
 }
 
-@compute @workgroup_size(16, 16)
+@compute @workgroup_size(16, 16, 1)
 fn scale(
     @builtin(global_invocation_id) id: vec3<u32>,
 ) {
+    let coords = vec2<i32>(id.xy);
+    let layer = id.z;
+
     let b0 = textureLoad(
         buffer_a_0,
-        vec2<i32>(id.xy),
+        coords,
+        layer,
     );
 
     textureStore(
         buffer_a_0,
-        vec2<i32>(id.xy),
+        coords,
+        layer,
         b0 / f32(params.size) / f32(params.size),
     );
 }

@@ -17,11 +17,8 @@ use bevy::{
 };
 use rand::prelude::*;
 
-use crate::ocean::{OceanCascade, OceanCascadeParameters};
-use crate::{
-    colors::{fog, ocean, sky, sun},
-    ocean::OceanCascadeData,
-};
+use crate::ocean::{OceanSurface, OceanSurfaceCascadeData, OceanSurfaceParameters};
+use crate::colors::{fog, ocean, sky, sun};
 
 const OCEAN_SHADER_PATH: &str = "embedded://bevy_ocean/shaders/ocean_shader.wgsl";
 const NUMBER_OF_CASCADES: u32 = 3;
@@ -373,7 +370,7 @@ impl OceanCamera {
                 Mesh3d(meshes.add(mesh)),
                 MeshMaterial3d(ocean_material.clone()),
                 Transform::from_translation(Vec3::ZERO),
-                OceanSurface,
+                OceanSurfaceMarker,
                 OceanSnapSize(cell_size),
                 NotShadowCaster,
                 NotShadowReceiver,
@@ -386,7 +383,7 @@ impl OceanCamera {
         camera_query: Query<&Transform, With<OceanCamera>>,
         mut ocean_query: Query<
             (&mut Transform, &OceanSnapSize),
-            (With<OceanSurface>, Without<OceanCamera>),
+            (With<OceanSurfaceMarker>, Without<OceanCamera>),
         >,
     ) {
         let Some(camera_transform) = camera_query.iter().next() else {
@@ -607,7 +604,7 @@ impl Plugin for OceanPlugin {
 
 #[derive(Resource)]
 struct OceanPipeline {
-    ocean_surface: OceanCascade<3>,
+    ocean_surface: OceanSurface<3>,
 }
 
 #[derive(Debug, Hash, PartialEq, Eq, Clone, RenderLabel)]
@@ -615,13 +612,13 @@ struct OceanLabel;
 
 /// Marker component for ocean surface entities
 #[derive(Component)]
-pub struct OceanSurface;
+pub struct OceanSurfaceMarker;
 
 /// System to sync OceanParams resource to all ocean materials
 fn sync_ocean_params(
     ocean_params: Res<OceanParams>,
     mut materials: ResMut<Assets<OceanMaterial<3>>>,
-    query: Query<&MeshMaterial3d<OceanMaterial<3>>, With<OceanSurface>>,
+    query: Query<&MeshMaterial3d<OceanMaterial<3>>, With<OceanSurfaceMarker>>,
 ) {
     if !ocean_params.is_changed() {
         return;
@@ -747,7 +744,7 @@ fn init_ocean_pipeline(
     let Some(ocean_images) = ocean_images else {
         return;
     };
-    let ocean_params = OceanCascadeParameters {
+    let ocean_params = OceanSurfaceParameters {
         size: settings.quality as u32,
         wind_speed: settings.wind_speed,
         wind_direction: settings.wind_direction,
@@ -763,19 +760,19 @@ fn init_ocean_pipeline(
         .unwrap();
 
     let cascade_data = [
-        OceanCascadeData {
+        OceanSurfaceCascadeData {
             displacement: &displacement_texture.texture,
             derivatives: &derivatives_texture.texture,
             foam_persistence: &foam_persistence_texture.texture,
             length_scale: 500.,
         },
-        OceanCascadeData {
+        OceanSurfaceCascadeData {
             displacement: &displacement_texture.texture,
             derivatives: &derivatives_texture.texture,
             foam_persistence: &foam_persistence_texture.texture,
             length_scale: 85.,
         },
-        OceanCascadeData {
+        OceanSurfaceCascadeData {
             displacement: &displacement_texture.texture,
             derivatives: &derivatives_texture.texture,
             foam_persistence: &foam_persistence_texture.texture,
@@ -783,7 +780,7 @@ fn init_ocean_pipeline(
         },
     ];
     let ocean_resources = OceanPipeline {
-        ocean_surface: OceanCascade::new(
+        ocean_surface: OceanSurface::new(
             &render_device,
             settings.quality as u32,
             ocean_params,

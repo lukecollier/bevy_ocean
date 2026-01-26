@@ -2,11 +2,13 @@
 
 struct Parameters {
   size: u32,
+  layer: u32,
   length_scale: f32,
   cut_off_low: f32,
   cut_off_high: f32,
   gravity_acceleration: f32,
   depth: f32,
+  _padding: f32,
 };
 
 struct SpectrumParamers {
@@ -25,13 +27,13 @@ struct SpectrumParamers {
 var noise: texture_2d<f32>;
 
 @group(0) @binding(1)
-var h0_texture: texture_storage_2d<rgba32float, read_write>;
+var h0_texture: texture_storage_2d_array<rgba32float, read_write>;
 
 @group(0) @binding(2)
-var waves_data_texture: texture_storage_2d<rgba32float, read_write>;
+var waves_data_texture: texture_storage_2d_array<rgba32float, read_write>;
 
 @group(0) @binding(3)
-var h0k_texture: texture_storage_2d<rgba32float, read_write>;
+var h0k_texture: texture_storage_2d_array<rgba32float, read_write>;
 
 @group(1) @binding(0)
 var<uniform> parameters: Parameters;
@@ -146,7 +148,7 @@ fn complex_mult(a: vec2<f32>, b: vec2<f32>) -> vec2<f32> {
     return vec2<f32>(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x);
 }
  
-@compute @workgroup_size(16, 16)
+@compute @workgroup_size(16, 16, 1)
 fn calculate_initial_spectrum(
     @builtin(global_invocation_id) id: vec3<u32>,
 ) {
@@ -157,10 +159,11 @@ fn calculate_initial_spectrum(
     let k = vec2<f32>(f32(nx), f32(nz)) * delta_k;
     let k_length = length(k);
     let coords = vec2<i32>(id.xy);
+    let layer = parameters.layer;
 
     if (k_length > parameters.cut_off_high || k_length < parameters.cut_off_low) {
-        textureStore(h0k_texture, coords, vec4<f32>(0.0, 0.0, 0.0, 0.0));
-        textureStore(waves_data_texture, coords, vec4<f32>(k.x, 1.0, k.y, 0.0));
+        textureStore(h0k_texture, coords, layer, vec4<f32>(0.0, 0.0, 0.0, 0.0));
+        textureStore(waves_data_texture, coords, layer, vec4<f32>(k.x, 1.0, k.y, 0.0));
         return;
     }
 
@@ -168,7 +171,7 @@ fn calculate_initial_spectrum(
     let omega = frequency(k_length, parameters.gravity_acceleration, parameters.depth);
     let w = vec4<f32>(k.x, 1.0 / k_length, k.y, omega);
 
-    textureStore(waves_data_texture, coords, w);
+    textureStore(waves_data_texture, coords, layer, w);
 
     let d_omega_dk = frequency_derivative(k_length, parameters.gravity_acceleration, parameters.depth);
 
@@ -190,20 +193,21 @@ fn calculate_initial_spectrum(
     let n = textureLoad(noise, coords, 0).xy;
     let h0k_val = n * sqrt(2.0 * spectrum_val * abs(d_omega_dk) / k_length * delta_k * delta_k);
 
-    textureStore(h0k_texture, coords, vec4<f32>(h0k_val, 0.0, 1.0));
+    textureStore(h0k_texture, coords, layer, vec4<f32>(h0k_val, 0.0, 1.0));
 }
 
-@compute @workgroup_size(16, 16)
+@compute @workgroup_size(16, 16, 1)
 fn calculate_conjugated_spectrum(
     @builtin(global_invocation_id) id: vec3<u32>,
 ) {
     let coords = vec2<i32>(id.xy);
-    let h0k = textureLoad(h0k_texture, coords).xy;
+    let layer = parameters.layer;
+    let h0k = textureLoad(h0k_texture, coords, layer).xy;
     let h0minusk_coords = vec2<i32>(
         i32((parameters.size - id.x) % parameters.size),
         i32((parameters.size - id.y) % parameters.size)
     );
-    let h0minusk = textureLoad(h0k_texture, h0minusk_coords).xy;
+    let h0minusk = textureLoad(h0k_texture, h0minusk_coords, layer).xy;
 
-    textureStore(h0_texture, coords, vec4<f32>(h0k.x, h0k.y, h0minusk.x, -h0minusk.y));
+    textureStore(h0_texture, coords, layer, vec4<f32>(h0k.x, h0k.y, h0minusk.x, -h0minusk.y));
 }

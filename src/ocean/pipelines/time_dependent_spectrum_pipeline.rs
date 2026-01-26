@@ -9,8 +9,6 @@ use bevy::render::{
     renderer::RenderDevice,
 };
 
-use crate::ocean::utils::compute_work_group_count;
-
 #[repr(C)]
 #[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 struct Params {
@@ -19,6 +17,7 @@ struct Params {
 
 pub struct TimeDependentSpectrumPipeline {
     size: u32,
+    layers: u32,
     textures_bind_group: BindGroup,
     pipeline: ComputePipeline,
 }
@@ -26,6 +25,7 @@ pub struct TimeDependentSpectrumPipeline {
 impl TimeDependentSpectrumPipeline {
     pub fn init<'a>(
         size: u32,
+        layers: u32,
         device: &RenderDevice,
 
         h0_texture: &'a Texture,
@@ -34,47 +34,47 @@ impl TimeDependentSpectrumPipeline {
         amp_dyx_dyz_texture: &'a Texture,
     ) -> Self {
         let texture_bind_group_layout = device.create_bind_group_layout(
-            "Texture bind group layout",
+            "Time-dependent spectrum - texture bind group layout",
             &[
-                // h0_texture
+                // h0_texture (array)
                 BindGroupLayoutEntry {
                     binding: 0,
                     visibility: ShaderStages::COMPUTE,
                     ty: BindingType::StorageTexture {
-                        view_dimension: TextureViewDimension::D2,
+                        view_dimension: TextureViewDimension::D2Array,
                         format: TextureFormat::Rgba32Float,
                         access: StorageTextureAccess::ReadOnly,
                     },
                     count: None,
                 },
-                // waves_data_texture
+                // waves_data_texture (array)
                 BindGroupLayoutEntry {
                     binding: 1,
                     visibility: ShaderStages::COMPUTE,
                     ty: BindingType::StorageTexture {
-                        view_dimension: TextureViewDimension::D2,
+                        view_dimension: TextureViewDimension::D2Array,
                         format: TextureFormat::Rgba32Float,
                         access: StorageTextureAccess::ReadOnly,
                     },
                     count: None,
                 },
-                // amp_dx_dz_texture
+                // amp_dx_dz_texture (array)
                 BindGroupLayoutEntry {
                     binding: 2,
                     visibility: ShaderStages::COMPUTE,
                     ty: BindingType::StorageTexture {
-                        view_dimension: TextureViewDimension::D2,
+                        view_dimension: TextureViewDimension::D2Array,
                         format: TextureFormat::Rgba32Float,
                         access: StorageTextureAccess::WriteOnly,
                     },
                     count: None,
                 },
-                // amp_dyx_dyz_texture
+                // amp_dyx_dyz_texture (array)
                 BindGroupLayoutEntry {
                     binding: 3,
                     visibility: ShaderStages::COMPUTE,
                     ty: BindingType::StorageTexture {
-                        view_dimension: TextureViewDimension::D2,
+                        view_dimension: TextureViewDimension::D2Array,
                         format: TextureFormat::Rgba32Float,
                         access: StorageTextureAccess::WriteOnly,
                     },
@@ -84,13 +84,14 @@ impl TimeDependentSpectrumPipeline {
         );
 
         let textures_bind_group = device.create_bind_group(
-            "Texture bind group",
+            "Time-dependent spectrum - texture bind group",
             &texture_bind_group_layout,
             &[
                 BindGroupEntry {
                     binding: 0,
                     resource: BindingResource::TextureView(&h0_texture.create_view(
                         &TextureViewDescriptor {
+                            dimension: Some(TextureViewDimension::D2Array),
                             ..Default::default()
                         },
                     )),
@@ -99,6 +100,7 @@ impl TimeDependentSpectrumPipeline {
                     binding: 1,
                     resource: BindingResource::TextureView(&waves_data_texture.create_view(
                         &TextureViewDescriptor {
+                            dimension: Some(TextureViewDimension::D2Array),
                             ..Default::default()
                         },
                     )),
@@ -107,6 +109,7 @@ impl TimeDependentSpectrumPipeline {
                     binding: 2,
                     resource: BindingResource::TextureView(&amp_dx_dz_texture.create_view(
                         &TextureViewDescriptor {
+                            dimension: Some(TextureViewDimension::D2Array),
                             ..Default::default()
                         },
                     )),
@@ -115,6 +118,7 @@ impl TimeDependentSpectrumPipeline {
                     binding: 3,
                     resource: BindingResource::TextureView(&amp_dyx_dyz_texture.create_view(
                         &TextureViewDescriptor {
+                            dimension: Some(TextureViewDimension::D2Array),
                             ..Default::default()
                         },
                     )),
@@ -151,15 +155,13 @@ impl TimeDependentSpectrumPipeline {
 
         Self {
             size,
+            layers,
             textures_bind_group,
             pipeline,
         }
     }
 
     pub fn dispatch(&self, encoder: &mut CommandEncoder, time: f32) {
-        let (dispatch_width, dispatch_height) =
-            compute_work_group_count((self.size, self.size), (16, 16));
-
         let mut compute_pass = encoder.begin_compute_pass(&ComputePassDescriptor {
             label: Some("Calculate time-dependent spectrum"),
             timestamp_writes: None,
@@ -170,6 +172,7 @@ impl TimeDependentSpectrumPipeline {
         compute_pass.set_pipeline(&self.pipeline);
         compute_pass.set_bind_group(0, &self.textures_bind_group, &[]);
         compute_pass.set_push_constants(0, bytemuck::cast_slice(&[params]));
-        compute_pass.dispatch_workgroups(dispatch_width, dispatch_height, 1);
+        // Dispatch for all layers at once
+        compute_pass.dispatch_workgroups(self.size / 16, self.size / 16, self.layers);
     }
 }

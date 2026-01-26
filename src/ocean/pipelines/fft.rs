@@ -21,6 +21,7 @@ struct Parameters {
 
 pub struct FFT {
     size: u32,
+    layers: u32,
     buffer: Texture,
 
     precompute_pipeline: ComputePipeline,
@@ -37,7 +38,7 @@ pub struct FFT {
 }
 
 impl FFT {
-    pub fn init(size: u32, device: &RenderDevice, input: &Texture, input_b: &Texture) -> Self {
+    pub fn init(size: u32, layers: u32, device: &RenderDevice, input: &Texture, input_b: &Texture) -> Self {
         let shader = unsafe {
             device.create_shader_module(ShaderModuleDescriptor {
                 label: Some("FFT shader"),
@@ -48,6 +49,7 @@ impl FFT {
         let texture_bind_group_layout = device.create_bind_group_layout(
             "FFT texture bind group layout",
             &[
+                // precompute_buffer stays as 2D (shared across layers)
                 BindGroupLayoutEntry {
                     binding: 0,
                     visibility: ShaderStages::COMPUTE,
@@ -58,41 +60,45 @@ impl FFT {
                     },
                     count: None,
                 },
+                // buffer_a_0 (input) - now D2Array
                 BindGroupLayoutEntry {
                     binding: 1,
                     visibility: ShaderStages::COMPUTE,
                     ty: BindingType::StorageTexture {
-                        view_dimension: TextureViewDimension::D2,
+                        view_dimension: TextureViewDimension::D2Array,
                         format: TextureFormat::Rgba32Float,
                         access: StorageTextureAccess::ReadWrite,
                     },
                     count: None,
                 },
+                // buffer_a_1 - now D2Array
                 BindGroupLayoutEntry {
                     binding: 2,
                     visibility: ShaderStages::COMPUTE,
                     ty: BindingType::StorageTexture {
-                        view_dimension: TextureViewDimension::D2,
+                        view_dimension: TextureViewDimension::D2Array,
                         format: TextureFormat::Rgba32Float,
                         access: StorageTextureAccess::ReadWrite,
                     },
                     count: None,
                 },
+                // buffer_b_0 (input_b) - now D2Array
                 BindGroupLayoutEntry {
                     binding: 3,
                     visibility: ShaderStages::COMPUTE,
                     ty: BindingType::StorageTexture {
-                        view_dimension: TextureViewDimension::D2,
+                        view_dimension: TextureViewDimension::D2Array,
                         format: TextureFormat::Rgba32Float,
                         access: StorageTextureAccess::ReadWrite,
                     },
                     count: None,
                 },
+                // buffer_b_1 - now D2Array
                 BindGroupLayoutEntry {
                     binding: 4,
                     visibility: ShaderStages::COMPUTE,
                     ty: BindingType::StorageTexture {
-                        view_dimension: TextureViewDimension::D2,
+                        view_dimension: TextureViewDimension::D2Array,
                         format: TextureFormat::Rgba32Float,
                         access: StorageTextureAccess::ReadWrite,
                     },
@@ -156,7 +162,7 @@ impl FFT {
             size: Extent3d {
                 width: size,
                 height: size,
-                depth_or_array_layers: 1,
+                depth_or_array_layers: layers,
             },
             mip_level_count: 1,
             sample_count: 1,
@@ -171,7 +177,7 @@ impl FFT {
             size: Extent3d {
                 width: size,
                 height: size,
-                depth_or_array_layers: 1,
+                depth_or_array_layers: layers,
             },
             mip_level_count: 1,
             sample_count: 1,
@@ -198,6 +204,7 @@ impl FFT {
                     binding: 1,
                     resource: BindingResource::TextureView(&input.create_view(
                         &TextureViewDescriptor {
+                            dimension: Some(TextureViewDimension::D2Array),
                             format: Some(TextureFormat::Rgba32Float),
                             ..Default::default()
                         },
@@ -207,6 +214,7 @@ impl FFT {
                     binding: 2,
                     resource: BindingResource::TextureView(&buffer.create_view(
                         &TextureViewDescriptor {
+                            dimension: Some(TextureViewDimension::D2Array),
                             format: Some(TextureFormat::Rgba32Float),
                             ..Default::default()
                         },
@@ -216,6 +224,7 @@ impl FFT {
                     binding: 3,
                     resource: BindingResource::TextureView(&input_b.create_view(
                         &TextureViewDescriptor {
+                            dimension: Some(TextureViewDimension::D2Array),
                             format: Some(TextureFormat::Rgba32Float),
                             ..Default::default()
                         },
@@ -225,6 +234,7 @@ impl FFT {
                     binding: 4,
                     resource: BindingResource::TextureView(&buffer_b.create_view(
                         &TextureViewDescriptor {
+                            dimension: Some(TextureViewDimension::D2Array),
                             format: Some(TextureFormat::Rgba32Float),
                             ..Default::default()
                         },
@@ -300,6 +310,7 @@ impl FFT {
 
         return Self {
             size,
+            layers,
             buffer,
             precompute_pipeline,
             parameters_buffer,
@@ -357,7 +368,7 @@ impl FFT {
             };
 
             compute_pass.set_push_constants(0, bytemuck::cast_slice(&[parameters]));
-            compute_pass.dispatch_workgroups(self.size / 16, self.size / 16, 1);
+            compute_pass.dispatch_workgroups(self.size / 16, self.size / 16, self.layers);
         }
 
         compute_pass.set_pipeline(&self.vertical_step_pipeline);
@@ -370,7 +381,7 @@ impl FFT {
             };
 
             compute_pass.set_push_constants(0, bytemuck::cast_slice(&[parameters]));
-            compute_pass.dispatch_workgroups(self.size / 16, self.size / 16, 1);
+            compute_pass.dispatch_workgroups(self.size / 16, self.size / 16, self.layers);
         }
 
         if ping_pong == 1 {
@@ -383,7 +394,7 @@ impl FFT {
                     step: 0,
                 }]),
             );
-            compute_pass.dispatch_workgroups(self.size / 16, self.size / 16, 1);
+            compute_pass.dispatch_workgroups(self.size / 16, self.size / 16, self.layers);
         }
 
         compute_pass.set_pipeline(&self.permute_pipeline);
@@ -395,6 +406,6 @@ impl FFT {
                 step: 0,
             }]),
         );
-        compute_pass.dispatch_workgroups(self.size / 16, self.size / 16, 1);
+        compute_pass.dispatch_workgroups(self.size / 16, self.size / 16, self.layers);
     }
 }

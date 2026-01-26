@@ -12,18 +12,16 @@ struct Parameters {
     foam_spawn_threshold: f32,  // Jacobian threshold for spawning foam
     foam_spawn_strength: f32,   // How much foam to add when spawning
     delta_time: f32,
-    layer: u32
 };
 
 var<push_constant> params: Parameters;
 
-@compute @workgroup_size(16, 16)
+@compute @workgroup_size(16, 16, 1)
 fn update_foam(
     @builtin(global_invocation_id) id: vec3<u32>,
 ) {
     let coords = vec2<i32>(id.xy);
-    // let layer = id.z;
-    let layer = params.layer;
+    let layer = id.z;
 
     // Read current Jacobian from displacement texture (stored in .w component)
     let jacobian = textureLoad(displacement_texture, coords, layer).w;

@@ -16,14 +16,13 @@ struct Parameters {
     foam_spawn_threshold: f32,
     foam_spawn_strength: f32,
     delta_time: f32,
-    layer: u32,
 }
 
 pub struct FoamPersistencePipeline {
     size: u32,
+    layers: u32,
     textures_bind_group: BindGroup,
     pipeline: ComputePipeline,
-    layers: u32,
 }
 
 impl FoamPersistencePipeline {
@@ -33,6 +32,8 @@ impl FoamPersistencePipeline {
         displacement_texture: &Texture,
         foam_persistence_texture: &Texture,
     ) -> Self {
+        let layers = displacement_texture.depth_or_array_layers();
+
         let textures_bind_group_layout = device.create_bind_group_layout(
             "Foam persistence - texture bind group layout",
             &[
@@ -66,7 +67,7 @@ impl FoamPersistencePipeline {
             bind_group_layouts: &[&textures_bind_group_layout],
             push_constant_ranges: &[PushConstantRange {
                 stages: ShaderStages::COMPUTE,
-                range: 0..std::mem::size_of::<Parameters>() as u32, // 4 floats * 4 bytes
+                range: 0..std::mem::size_of::<Parameters>() as u32,
             }],
         });
 
@@ -117,13 +118,13 @@ impl FoamPersistencePipeline {
 
         Self {
             size,
+            layers,
             textures_bind_group,
             pipeline,
-            layers: displacement_texture.depth_or_array_layers(),
         }
     }
 
-    pub fn dispatch(&self, encoder: &mut CommandEncoder, dt: std::time::Duration, layer: u32) {
+    pub fn dispatch(&self, encoder: &mut CommandEncoder, dt: std::time::Duration) {
         let mut compute_pass = encoder.begin_compute_pass(&ComputePassDescriptor {
             label: Some("Foam persistence"),
             timestamp_writes: None,
@@ -134,12 +135,12 @@ impl FoamPersistencePipeline {
             foam_spawn_threshold: 1.0,
             foam_spawn_strength: 1.5,
             delta_time: dt.as_secs_f32(),
-            layer,
         };
 
         compute_pass.set_pipeline(&self.pipeline);
         compute_pass.set_bind_group(0, &self.textures_bind_group, &[]);
         compute_pass.set_push_constants(0, bytemuck::cast_slice(&[parameters]));
-        compute_pass.dispatch_workgroups(self.size / 16, self.size / 16, 1);
+        // Dispatch for all layers at once
+        compute_pass.dispatch_workgroups(self.size / 16, self.size / 16, self.layers);
     }
 }
