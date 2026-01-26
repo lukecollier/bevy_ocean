@@ -17,8 +17,8 @@ use bevy::{
 };
 use rand::prelude::*;
 
-use crate::ocean::{OceanSurface, OceanSurfaceCascadeData, OceanSurfaceParameters};
 use crate::colors::{fog, ocean, sky, sun};
+use crate::ocean::{OceanSurface, OceanSurfaceCascadeData, OceanSurfaceParameters};
 
 const OCEAN_SHADER_PATH: &str = "embedded://bevy_ocean/shaders/ocean_shader.wgsl";
 const NUMBER_OF_CASCADES: u32 = 3;
@@ -354,10 +354,10 @@ impl OceanCamera {
         // inner_half_size=0 creates a solid square (center patch)
         // subdivisions = cells along the full outer edge (like a plane)
         let lod_rings = [
-            (0.0, 256.0, 1024),            // Ring 0: Center square, highest detail
-            (256.0, 2048.0 + 256.0, 1024), // Ring 1: Medium detail frame
-            (2048.0 + 256., 8192.0, 512),  // Ring 2: Low detail frame
-            (8192.0, 32768.0, 256),        // Ring 3: Very low detail, extends to horizon
+            (0.0, 256.0, 512),            // Ring 0: Center square, highest detail
+            (256.0, 2048.0 + 256.0, 512), // Ring 1: Medium detail frame
+            (2048.0 + 256., 8192.0, 512), // Ring 2: Low detail frame
+            (8192.0, 32768.0, 256),       // Ring 3: Very low detail, extends to horizon
         ];
 
         for (inner_half, outer_half, subdivisions) in lod_rings {

@@ -1,5 +1,5 @@
 use bevy::dev_tools::fps_overlay::FpsOverlayPlugin;
-use bevy::diagnostic::FrameTimeDiagnosticsPlugin;
+use bevy::diagnostic::{FrameTimeDiagnosticsPlugin, LogDiagnosticsPlugin};
 use bevy::feathers::{
     FeathersPlugins,
     controls::{SliderProps, slider},
@@ -7,7 +7,9 @@ use bevy::feathers::{
     theme::{ThemeBackgroundColor, ThemedText, UiTheme},
     tokens,
 };
+use bevy::log::LogPlugin;
 use bevy::prelude::*;
+use bevy::render::diagnostic::RenderDiagnosticsPlugin;
 use bevy::ui_widgets::{SliderPrecision, SliderStep, ValueChange, observe, slider_self_update};
 use bevy_flycam::PlayerPlugin;
 use bevy_rand::{plugin::EntropyPlugin, prelude::WyRand};
@@ -19,12 +21,18 @@ use bevy_ocean::sky_plugin::SkyPlugin;
 
 fn main() -> AppExit {
     App::new()
-        .add_plugins(DefaultPlugins)
+        .add_plugins(DefaultPlugins.set(LogPlugin {
+            // filter: "wgpu=trace,warn".into(),
+            level: bevy::log::Level::INFO,
+            ..Default::default()
+        }))
+        .add_plugins(bevy::diagnostic::SystemInformationDiagnosticsPlugin::default())
         .add_plugins(PlayerPlugin)
         .add_plugins(EntropyPlugin::<WyRand>::default())
         .add_plugins(OceanPlugin::default())
         .add_plugins(SkyPlugin)
         .add_plugins(FrameTimeDiagnosticsPlugin::default())
+        .add_plugins(LogDiagnosticsPlugin::default())
         .add_plugins(FpsOverlayPlugin::default())
         .add_plugins(CloudPlugin)
         .add_plugins(DayNightCyclePlugin::new(60.0 * 60.0))
