@@ -354,9 +354,9 @@ impl OceanCamera {
         // inner_half_size=0 creates a solid square (center patch)
         // subdivisions = cells along the full outer edge (like a plane)
         let lod_rings = [
-            (0.0, 256.0, 512),            // Ring 0: Center square, highest detail
-            (256.0, 2048.0 + 256.0, 512), // Ring 1: Medium detail frame
-            (2048.0 + 256., 8192.0, 512), // Ring 2: Low detail frame
+            (0.0, 256.0, 256),            // Ring 0: Center square, highest detail
+            (256.0, 2048.0 + 256.0, 256), // Ring 1: Medium detail frame
+            (2048.0 + 256., 8192.0, 256), // Ring 2: Low detail frame
             (8192.0, 32768.0, 256),       // Ring 3: Very low detail, extends to horizon
         ];
 
