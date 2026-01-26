@@ -27,7 +27,7 @@ fn main() -> AppExit {
         .add_plugins(FrameTimeDiagnosticsPlugin::default())
         .add_plugins(FpsOverlayPlugin::default())
         .add_plugins(CloudPlugin)
-        .add_plugins(DayNightCyclePlugin::new(60.0))
+        .add_plugins(DayNightCyclePlugin::new(60.0 * 60.0))
         .insert_resource(UiTheme(create_dark_theme()))
         .add_plugins(FeathersPlugins)
         .add_systems(Startup, startup_ui)
