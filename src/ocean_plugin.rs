@@ -3,6 +3,7 @@ use bevy::{
     ecs::schedule::common_conditions::{not, resource_exists},
     image::{ImageAddressMode, ImageFilterMode, ImageSampler, ImageSamplerDescriptor},
     light::{NotShadowCaster, NotShadowReceiver},
+    pbr::wireframe::Wireframe,
     prelude::*,
     render::{
         Render, RenderApp,
@@ -334,6 +335,7 @@ impl OceanCamera {
         mut materials: ResMut<Assets<OceanMaterial<NUMBER_OF_CASCADES>>>,
         ocean_images: Res<OceanImages>,
         ocean_params: Res<OceanParams>,
+        ocean_settings: Res<OceanSettings>,
         asset_server: Res<AssetServer>,
     ) {
         // Load foam texture
@@ -348,17 +350,39 @@ impl OceanCamera {
             t_derivatives: ocean_images.derivative_image.clone(),
             t_foam_persistences: ocean_images.foam_persistence_image.clone(),
         });
-
         // LOD rings configuration: (inner_half_size, outer_half_size, subdivisions)
         // Each ring is a square frame that fills the gap between sizes
         // inner_half_size=0 creates a solid square (center patch)
         // subdivisions = cells along the full outer edge (like a plane)
-        let lod_rings = [
-            (0.0, 256.0, 256),            // Ring 0: Center square, highest detail
-            (256.0, 2048.0 + 256.0, 256), // Ring 1: Medium detail frame
-            (2048.0 + 256., 8192.0, 256), // Ring 2: Low detail frame
-            (8192.0, 32768.0, 256),       // Ring 3: Very low detail, extends to horizon
-        ];
+        // todo: These should change depending on quality too
+        let mut lod_rings = [
+            (0.0, 1024.0, 256),    // Ring 0: Center square, highest detail
+            (1024.0, 4092., 128),  // Ring 1: Medium detail frame
+            (4092.0, 8192.0, 64),  // Ring 2: Low detail frame
+            (8192.0, 32768.0, 32), // Ring 3: Very low detail, extends to horizon
+        ]
+        .into_iter();
+
+        if let Some((_, outer_half, subdivisions)) = lod_rings.next() {
+            let mesh = Plane3d::new(Vec3::Y, Vec2::splat(outer_half))
+                .mesh()
+                .subdivisions(subdivisions)
+                .build();
+
+            // Calculate cell size for this ring: total_size / subdivisions
+            let cell_size = (outer_half * 2.0) / subdivisions as f32;
+
+            commands.spawn((
+                Wireframe,
+                Mesh3d(meshes.add(mesh)),
+                MeshMaterial3d(ocean_material.clone()),
+                Transform::from_translation(Vec3::ZERO),
+                OceanSurfaceMarker,
+                OceanSnapSize(cell_size),
+                NotShadowCaster,
+                NotShadowReceiver,
+            ));
+        }
 
         for (inner_half, outer_half, subdivisions) in lod_rings {
             let mesh = Self::create_square_ring_mesh(inner_half, outer_half, subdivisions);
@@ -367,6 +391,7 @@ impl OceanCamera {
             let cell_size = (outer_half * 2.0) / subdivisions as f32;
 
             commands.spawn((
+                Wireframe,
                 Mesh3d(meshes.add(mesh)),
                 MeshMaterial3d(ocean_material.clone()),
                 Transform::from_translation(Vec3::ZERO),
