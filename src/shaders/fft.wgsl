@@ -394,8 +394,9 @@ fn scale(
 ) {
     let coords = vec2<i32>(id.xy);
     let layer = id.z;
+    let scale_factor = 1.0 / f32(params.size) / f32(params.size);
 
-    let b0 = textureLoad(
+    let a0 = textureLoad(
         buffer_a_0,
         coords,
         layer,
@@ -405,7 +406,20 @@ fn scale(
         buffer_a_0,
         coords,
         layer,
-        b0 / f32(params.size) / f32(params.size),
+        a0 * scale_factor,
+    );
+
+    let b0 = textureLoad(
+        buffer_b_0,
+        coords,
+        layer,
+    );
+
+    textureStore(
+        buffer_b_0,
+        coords,
+        layer,
+        b0 * scale_factor,
     );
 }
 

@@ -197,9 +197,8 @@ impl<const N: usize> OceanSurface<N> {
                     ..surface_params
                 }
             } else if idx == N - 1 {
-                // last cascade
-                let prev_length_scale = cascade_data[idx - 1].length_scale;
-                let boundary_low = 2.0 * std::f32::consts::PI / prev_length_scale * 6.0;
+                // last cascade - boundary_low matches previous cascade's boundary_high
+                let boundary_low = 2.0 * std::f32::consts::PI / length_scale * 6.0;
                 let boundary_high = 9999.0;
                 OceanSpectrumParameters {
                     cut_off_low: boundary_low,
@@ -208,10 +207,9 @@ impl<const N: usize> OceanSurface<N> {
                     ..surface_params
                 }
             } else {
-                // inbetween cascade
-                let prev_length_scale = cascade_data[idx - 1].length_scale;
+                // inbetween cascade - boundary_low matches previous cascade's boundary_high
                 let next_length_scale = cascade_data[idx + 1].length_scale;
-                let boundary_low = 2.0 * std::f32::consts::PI / prev_length_scale * 6.0;
+                let boundary_low = 2.0 * std::f32::consts::PI / length_scale * 6.0;
                 let boundary_high = 2.0 * std::f32::consts::PI / next_length_scale * 6.0;
                 OceanSpectrumParameters {
                     cut_off_low: boundary_low,
