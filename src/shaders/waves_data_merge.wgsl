@@ -5,12 +5,19 @@ var amp_dx_dz__dy_dxz_texture: texture_storage_2d_array<rgba32float, read>;
 @group(0) @binding(1)
 var amp_dyx_dyz__dxx_dzz_texture: texture_storage_2d_array<rgba32float, read>;
 
-// Output textures (arrays)
+// Output textures - mip level 0 (arrays)
 @group(0) @binding(2)
 var out_displacement: texture_storage_2d_array<rgba32float, read_write>;
 
 @group(0) @binding(3)
 var out_derivatives: texture_storage_2d_array<rgba32float, write>;
+
+// Output textures - mip level 1
+@group(0) @binding(4)
+var out_displacement_mip1: texture_storage_2d_array<rgba32float, write>;
+
+@group(0) @binding(5)
+var out_derivatives_mip1: texture_storage_2d_array<rgba32float, write>;
 
 struct Parameters {
   lambda: f32,
@@ -19,40 +26,62 @@ struct Parameters {
 
 var<push_constant> params: Parameters;
 
+struct SampleResult {
+  displacement: vec4<f32>,
+  derivatives: vec4<f32>,
+};
+
+fn sampleAt(coords: vec2<i32>, layer: u32) -> SampleResult {
+  let l = params.lambda;
+  let dx_dz_dy_dxz = textureLoad(amp_dx_dz__dy_dxz_texture, coords, layer);
+  let dx_dz = dx_dz_dy_dxz.xy;
+  let dy_dxz = dx_dz_dy_dxz.zw;
+
+  let dyx_dyz_dxx_dzz = textureLoad(amp_dyx_dyz__dxx_dzz_texture, coords, layer);
+  let dyx_dyz = dyx_dyz_dxx_dzz.xy;
+  let dxx_dzz = dyx_dyz_dxx_dzz.zw;
+
+  let displacement = vec3<f32>(l * dx_dz.x, dy_dxz.x, l * dx_dz.y);
+  let derivatives = vec4<f32>(dyx_dyz, dxx_dzz * l);
+  let jacobian = (1.0 + l * dxx_dzz.x) * (1.0 + l * dxx_dzz.y) - l * l * dy_dxz.y * dy_dxz.y;
+
+  return SampleResult(vec4<f32>(displacement, jacobian), derivatives);
+}
+
 @compute @workgroup_size(16, 16, 1)
 fn merge(
-    @builtin(global_invocation_id) id: vec3<u32>,
+    @builtin(global_invocation_id) global_id: vec3<u32>,
+    @builtin(local_invocation_id) local_id: vec3<u32>,
+    @builtin(workgroup_id) workgroup_id: vec3<u32>,
 ) {
-    let coords = vec2<i32>(id.xy);
-    let layer = id.z;
-    let l = params.lambda;
+    let coords = vec2<i32>(global_id.xy);
+    let layer = global_id.z;
+    let sample = sampleAt(coords, layer);
 
-    let dx_dz_dy_dxz = textureLoad(amp_dx_dz__dy_dxz_texture, coords, layer);
-    let dx_dz = dx_dz_dy_dxz.xy;
-    let dy_dxz = dx_dz_dy_dxz.zw;
+    // Write mip 0
+    textureStore(out_displacement, coords, layer, sample.displacement);
+    textureStore(out_derivatives, coords, layer, sample.derivatives);
 
-    let dyx_dyz_dxx_dzz = textureLoad(amp_dyx_dyz__dxx_dzz_texture, coords, layer);
-    let dyx_dyz = dyx_dyz_dxx_dzz.xy;
-    let dxx_dzz = dyx_dyz_dxx_dzz.zw;
+    // === Mip 1 (8x8 threads active) ===
+    if (local_id.x < 8u && local_id.y < 8u) {
+        let origin = vec2<i32>(i32(workgroup_id.x * 16u), i32(workgroup_id.y * 16u));
+        let local_base = vec2<i32>(i32(local_id.x) * 2, i32(local_id.y) * 2);
 
-    let displacement = vec3<f32>(l * dx_dz.x, dy_dxz.x, l * dx_dz.y);
-    let derivatives = vec4<f32>(dyx_dyz, dxx_dzz * l);
+        let sample00 = sampleAt(origin + local_base, layer);
+        let sample10 = sampleAt(origin + local_base + vec2<i32>(1, 0), layer);
+        let sample01 = sampleAt(origin + local_base + vec2<i32>(0, 1), layer);
+        let sample11 = sampleAt(origin + local_base + vec2<i32>(1, 1), layer);
 
-    let jacobian = (1.0 + l * dxx_dzz.x) * (1.0 + l * dxx_dzz.y) - l * l * dy_dxz.y * dy_dxz.y;
+        let avg_disp = (sample00.displacement + sample10.displacement +
+                        sample01.displacement + sample11.displacement) * 0.25;
+        let avg_deriv = (sample00.derivatives + sample10.derivatives +
+                         sample01.derivatives + sample11.derivatives) * 0.25;
 
-    textureStore(
-        out_displacement,
-        coords,
-        layer,
-        vec4<f32>(displacement, jacobian),
-    );
-
-    textureStore(
-        out_derivatives,
-        coords,
-        layer,
-        derivatives,
-    );
+        let mip1_coords = vec2<i32>(i32(workgroup_id.x * 8u + local_id.x),
+                                    i32(workgroup_id.y * 8u + local_id.y));
+        textureStore(out_displacement_mip1, mip1_coords, layer, avg_disp);
+        textureStore(out_derivatives_mip1, mip1_coords, layer, avg_deriv);
+    }
 }
 
 const PI: f32 = 3.14159265358979323846264338;

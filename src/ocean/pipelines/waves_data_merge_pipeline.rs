@@ -4,7 +4,7 @@ use bevy::render::{
         CommandEncoder, ComputePassDescriptor, ComputePipeline, PipelineCompilationOptions,
         PipelineLayoutDescriptor, PushConstantRange, RawComputePipelineDescriptor,
         ShaderModuleDescriptor, ShaderSource, ShaderStages, StorageTextureAccess, Texture,
-        TextureFormat, TextureViewDescriptor, TextureViewDimension,
+        TextureFormat, TextureView, TextureViewDescriptor, TextureViewDimension,
     },
     renderer::RenderDevice,
 };
@@ -22,6 +22,11 @@ pub struct WavesDataMergePipeline {
     lambda: f32,
     textures_bind_group: BindGroup,
     pipeline: ComputePipeline,
+    // Store mip level views for displacement and derivatives (level 1 only)
+    #[allow(dead_code)]
+    displacement_mip1_view: TextureView,
+    #[allow(dead_code)]
+    derivatives_mip1_view: TextureView,
 }
 
 impl WavesDataMergePipeline {
@@ -61,7 +66,7 @@ impl WavesDataMergePipeline {
                     },
                     count: None,
                 },
-                // out_displacement (array)
+                // out_displacement mip 0 (array)
                 BindGroupLayoutEntry {
                     binding: 2,
                     visibility: ShaderStages::COMPUTE,
@@ -72,9 +77,31 @@ impl WavesDataMergePipeline {
                     },
                     count: None,
                 },
-                // out_derivatives (array)
+                // out_derivatives mip 0 (array)
                 BindGroupLayoutEntry {
                     binding: 3,
+                    visibility: ShaderStages::COMPUTE,
+                    ty: BindingType::StorageTexture {
+                        view_dimension: TextureViewDimension::D2Array,
+                        format: TextureFormat::Rgba32Float,
+                        access: StorageTextureAccess::WriteOnly,
+                    },
+                    count: None,
+                },
+                // out_displacement mip 1 (array)
+                BindGroupLayoutEntry {
+                    binding: 4,
+                    visibility: ShaderStages::COMPUTE,
+                    ty: BindingType::StorageTexture {
+                        view_dimension: TextureViewDimension::D2Array,
+                        format: TextureFormat::Rgba32Float,
+                        access: StorageTextureAccess::WriteOnly,
+                    },
+                    count: None,
+                },
+                // out_derivatives mip 1 (array)
+                BindGroupLayoutEntry {
+                    binding: 5,
                     visibility: ShaderStages::COMPUTE,
                     ty: BindingType::StorageTexture {
                         view_dimension: TextureViewDimension::D2Array,
@@ -111,6 +138,22 @@ impl WavesDataMergePipeline {
             entry_point: Some("merge"),
             compilation_options: PipelineCompilationOptions::default(),
             cache: None,
+        });
+
+        // Create mip level 1 view for displacement
+        let displacement_mip1_view = displacement_texture.create_view(&TextureViewDescriptor {
+            dimension: Some(TextureViewDimension::D2Array),
+            base_mip_level: 1,
+            mip_level_count: Some(1),
+            ..Default::default()
+        });
+
+        // Create mip level 1 view for derivatives
+        let derivatives_mip1_view = derivatives_texture.create_view(&TextureViewDescriptor {
+            dimension: Some(TextureViewDimension::D2Array),
+            base_mip_level: 1,
+            mip_level_count: Some(1),
+            ..Default::default()
         });
 
         let textures_bind_group = device.create_bind_group(
@@ -157,6 +200,16 @@ impl WavesDataMergePipeline {
                         },
                     )),
                 },
+                // Displacement mip level 1
+                BindGroupEntry {
+                    binding: 4,
+                    resource: BindingResource::TextureView(&displacement_mip1_view),
+                },
+                // Derivatives mip level 1
+                BindGroupEntry {
+                    binding: 5,
+                    resource: BindingResource::TextureView(&derivatives_mip1_view),
+                },
             ],
         );
 
@@ -166,6 +219,8 @@ impl WavesDataMergePipeline {
             lambda,
             textures_bind_group,
             pipeline,
+            displacement_mip1_view,
+            derivatives_mip1_view,
         }
     }
 

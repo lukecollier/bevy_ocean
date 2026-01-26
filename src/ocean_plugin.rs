@@ -910,7 +910,7 @@ pub fn setup(
     let displacement_descriptor = TextureDescriptor {
         label: Some("Displacement"),
         size: texture_size,
-        mip_level_count: 4,
+        mip_level_count: 2,
         sample_count: 1,
         dimension: TextureDimension::D2,
         format: TextureFormat::Rgba32Float,
@@ -922,7 +922,7 @@ pub fn setup(
     let derivatives_descriptor = TextureDescriptor {
         label: Some("Derivatives"),
         size: texture_size,
-        mip_level_count: 4,
+        mip_level_count: 2,
         sample_count: 1,
         dimension: TextureDimension::D2,
         format: TextureFormat::Rgba32Float,
@@ -959,7 +959,7 @@ pub fn setup(
     let foam_persistence_descriptor = TextureDescriptor {
         label: Some("Foam Persistence"),
         size: texture_size,
-        mip_level_count: 1,
+        mip_level_count: 2,
         sample_count: 1,
         dimension: TextureDimension::D2,
         format: TextureFormat::R32Float,

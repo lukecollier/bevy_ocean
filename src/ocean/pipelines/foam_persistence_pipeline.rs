@@ -4,7 +4,7 @@ use bevy::render::{
         CommandEncoder, ComputePassDescriptor, ComputePipeline, PipelineCompilationOptions,
         PipelineLayoutDescriptor, PushConstantRange, RawComputePipelineDescriptor,
         ShaderModuleDescriptor, ShaderSource, ShaderStages, StorageTextureAccess, Texture,
-        TextureFormat, TextureViewDescriptor, TextureViewDimension,
+        TextureFormat, TextureView, TextureViewDescriptor, TextureViewDimension,
     },
     renderer::RenderDevice,
 };
@@ -23,6 +23,9 @@ pub struct FoamPersistencePipeline {
     layers: u32,
     textures_bind_group: BindGroup,
     pipeline: ComputePipeline,
+    // Store mip level view for foam persistence (level 1 only)
+    #[allow(dead_code)]
+    foam_mip1_view: TextureView,
 }
 
 impl FoamPersistencePipeline {
@@ -48,7 +51,7 @@ impl FoamPersistencePipeline {
                     },
                     count: None,
                 },
-                // foam_persistence (read-write)
+                // foam_persistence mip 0 (read-write)
                 BindGroupLayoutEntry {
                     binding: 1,
                     visibility: ShaderStages::COMPUTE,
@@ -56,6 +59,17 @@ impl FoamPersistencePipeline {
                         view_dimension: TextureViewDimension::D2Array,
                         format: TextureFormat::R32Float,
                         access: StorageTextureAccess::ReadWrite,
+                    },
+                    count: None,
+                },
+                // foam_persistence mip 1 (write)
+                BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: ShaderStages::COMPUTE,
+                    ty: BindingType::StorageTexture {
+                        view_dimension: TextureViewDimension::D2Array,
+                        format: TextureFormat::R32Float,
+                        access: StorageTextureAccess::WriteOnly,
                     },
                     count: None,
                 },
@@ -89,6 +103,14 @@ impl FoamPersistencePipeline {
             cache: None,
         });
 
+        // Create mip level 1 view for foam persistence
+        let foam_mip1_view = foam_persistence_texture.create_view(&TextureViewDescriptor {
+            dimension: Some(TextureViewDimension::D2Array),
+            base_mip_level: 1,
+            mip_level_count: Some(1),
+            ..Default::default()
+        });
+
         let textures_bind_group = device.create_bind_group(
             "Foam persistence - textures",
             &textures_bind_group_layout,
@@ -109,9 +131,16 @@ impl FoamPersistencePipeline {
                     resource: BindingResource::TextureView(&foam_persistence_texture.create_view(
                         &TextureViewDescriptor {
                             dimension: Some(TextureViewDimension::D2Array),
+                            base_mip_level: 0,
+                            mip_level_count: Some(1),
                             ..Default::default()
                         },
                     )),
+                },
+                // Foam mip level 1
+                BindGroupEntry {
+                    binding: 2,
+                    resource: BindingResource::TextureView(&foam_mip1_view),
                 },
             ],
         );
@@ -121,6 +150,7 @@ impl FoamPersistencePipeline {
             layers,
             textures_bind_group,
             pipeline,
+            foam_mip1_view,
         }
     }
 
