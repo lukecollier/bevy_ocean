@@ -214,16 +214,14 @@ fn fragment(mesh: OceanVertexOutput) -> @location(0) vec4<f32> {
       // Blend derivatives based on LOD factors
       blended_deriv = blended_deriv + deriv * lod_c;
 
-      // Sample persistent foam from compute shader (has exponential decay applied)
-      // Each cascade contributes foam at its respective scale
-      let foam_persistent = textureSample(t_foam_persistences, s_ocean, uv, layer).r;
-
-      // Blend persistent foam from all cascades with distance-based weighting
-      // Use view_dist (with max protection) for consistent LOD calculations
-      let lod_foam = min(LOD_SCALE * cascade_param.length_scale / view_dist, 1.0);
-
       // Combine persistent foam from cascades (lod_cutoff of 0 means always include)
       if (cascade_param.lod_cutoff == 0.0 || view_dist < cascade_param.lod_cutoff) {
+        // Sample persistent foam from compute shader (has exponential decay applied)
+        // Each cascade contributes foam at its respective scale
+        let foam_persistent = textureSample(t_foam_persistences, s_ocean, uv, layer).r;
+        // Blend persistent foam from all cascades with distance-based weighting
+        // Use view_dist (with max protection) for consistent LOD calculations
+        let lod_foam = min(LOD_SCALE * cascade_param.length_scale / view_dist, 1.0);
         base_turbulence = base_turbulence + foam_persistent * lod_foam * cascade_param.foam_strength;
         // Sample foam texture at multiple scales as noise to break up the pattern
         // Use the cascade UVs for natural multi-scale variation
