@@ -41,13 +41,15 @@ struct SkyVertexOutput {
 fn vertex(in: Vertex) -> SkyVertexOutput {
     var model = mesh_functions::get_world_from_local(in.instance_index);
 
-    // Position the sky dome centered on the camera
+    // Position the sky dome centered on the camera in XZ, but keep Y at 0
+    // This keeps the horizon fixed at world y=0 so it always meets the ocean
     let camera_pos = view.world_position;
     let local_pos = vec4<f32>(in.position, 1.0);
     var world_pos = mesh_functions::mesh_position_local_to_world(model, local_pos);
 
-    // Keep sky dome centered on camera (follows camera movement)
-    world_pos = vec4<f32>(world_pos.xyz + camera_pos, world_pos.w);
+    // Only follow camera in XZ - keep dome's Y origin at world y=0
+    let dome_center = vec3<f32>(camera_pos.x, 0.0, camera_pos.z);
+    world_pos = vec4<f32>(world_pos.xyz + dome_center, world_pos.w);
 
     var out: SkyVertexOutput;
     out.position = position_world_to_clip(world_pos.xyz);
@@ -58,30 +60,26 @@ fn vertex(in: Vertex) -> SkyVertexOutput {
     return out;
 }
 
+// Sky dome radius (must match the value in sky_plugin.rs)
+const DOME_RADIUS: f32 = 10000.0;
+
 @fragment
 fn fragment(mesh: SkyVertexOutput) -> @location(0) vec4<f32> {
     // Normalize view ray (direction we're looking)
     let ray = normalize(mesh.view_ray);
     let camera_y = view.world_position.y;
 
-    // Fixed y=0 world-space horizon calculation
-    // Ray hits y=0 plane when: camera_y + t * ray.y = 0, so t = -camera_y / ray.y
-    // Water visible when camera above water (camera_y > 0) and ray points down (ray.y < 0)
-    // and would hit the plane (t > 0, which is guaranteed when signs differ)
-    let is_water = camera_y > 0.0 && ray.y < 0.0;
+    // Calculate where the y=0 horizon appears in view space
+    // When camera is at height h, the horizon (y=0 at distance R) is at angle:
+    // ray.y = -h / R (looking down from horizontal)
+    let horizon_ray_y = -camera_y / DOME_RADIUS;
 
-    // Calculate the angle to the y=0 horizon from current camera height
-    // At height h, looking at angle θ below horizontal hits y=0
-    // The horizon line is at θ = 0 (horizontal) for a flat plane
-    // But we want the horizon BLEND to be at y=0 world space
-
-    // For rays pointing down, calculate where they'd hit y=0
-    // Normalize the "horizon angle" relative to camera height for smooth blending
-    // horizon_ray_y is the ray.y value that would graze y=0 at infinity (always 0 for flat plane)
-    let horizon_ray_y = 0.0;
+    // Water visible when looking below the horizon line
+    let is_water = ray.y < horizon_ray_y;
 
     // Height factor for sky gradient (0 at horizon, 1 at zenith)
-    let height = saturate(ray.y);
+    // Offset by horizon angle so gradient is relative to true horizon
+    let height = saturate(ray.y - horizon_ray_y);
 
     // Blend between day and night colors based on sun intensity
     let horizon_color = mix(params.horizon_night, params.horizon_day, params.sun_intensity);
@@ -96,7 +94,8 @@ fn fragment(mesh: SkyVertexOutput) -> @location(0) vec4<f32> {
     let shallow_water = mix(params.water_shallow_night, params.water_shallow_day, params.sun_intensity);
 
     // Water gradient based on view angle (deeper = looking more down)
-    let water_depth = saturate(-ray.y * 3.0);  // 0 at horizon, 1 looking straight down
+    // Relative to true horizon, not horizontal
+    let water_depth = saturate((horizon_ray_y - ray.y) * 3.0);  // 0 at horizon, 1 looking straight down
     var water_color = mix(shallow_water, deep_water, water_depth);
 
     // At horizon, water should blend into the sky color (atmospheric perspective)
@@ -104,9 +103,9 @@ fn fragment(mesh: SkyVertexOutput) -> @location(0) vec4<f32> {
     let fresnel = pow(1.0 - water_depth, 3.0);
     water_color = mix(water_color, horizon_color, fresnel);
 
-    // Horizon haze - blend sky and water at the fixed y=0 horizon line
-    // Use ray.y directly since horizon is always at ray.y = 0 for flat plane
-    let horizon_blend = smoothstep(-0.02, 0.02, ray.y);
+    // Horizon haze - blend sky and water at the true y=0 horizon line
+    // Use horizon_ray_y to account for camera height
+    let horizon_blend = smoothstep(horizon_ray_y - 0.02, horizon_ray_y + 0.02, ray.y);
     var final_color = mix(water_color, sky_color, horizon_blend);
 
     // Sun direction (normalized)

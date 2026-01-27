@@ -42,6 +42,7 @@ fn vertex(in: Vertex) -> CloudVertexOutput {
     var world_pos = mesh_functions::mesh_position_local_to_world(model, local_pos);
 
     // Keep cloud dome centered on camera
+
     world_pos = vec4<f32>(world_pos.xyz + camera_pos, world_pos.w);
 
     var out: CloudVertexOutput;

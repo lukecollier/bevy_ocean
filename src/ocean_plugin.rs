@@ -45,7 +45,7 @@ pub struct OceanPlugin {
 impl Default for OceanPlugin {
     fn default() -> Self {
         Self {
-            quality: Quality::VeryLow,
+            quality: Quality::Low,
             params: OceanParams::default(),
             wind_speed: 10.0,
             wind_direction: 180.0,
@@ -59,7 +59,7 @@ impl Default for OceanPlugin {
 impl OceanPlugin {
     pub fn calm() -> Self {
         Self {
-            quality: Quality::VeryLow,
+            quality: Quality::Low,
             params: OceanParams::calm(),
             wind_speed: 3.0,
             wind_direction: 180.0,
@@ -350,139 +350,166 @@ impl OceanCamera {
             t_foam_persistences: ocean_images.foam_persistence_image.clone(),
         });
         // LOD configuration: each ring has (inner_half, outer_half, subdivisions_per_chunk)
-        // Ring 0 is a single center square
-        // Ring 1+ are 8 plane chunks arranged around the previous ring
+        // Ring 0 is a single center square (the parent)
+        // Ring 1+ are 8 plane chunks arranged around the previous ring (children)
         // Uses powers of 2 so boundaries align exactly on vertex grids
-        let lod_rings: [(f32, f32, u32); 4] = [
-            (0.0, 1024.0, 256),      // Ring 0: Center square, step=8
-            (1024.0, 4096.0, 192),   // Ring 1: 8 chunks, step=32
-            (4096.0, 16384.0, 192),  // Ring 2: 8 chunks, step=128
-            (16384.0, 65536.0, 192), // Ring 3: 8 chunks, step=512
+        let lod_rings: [(f32, f32, u32); 3] = [
+            (0.0, 1024.0, 512),              // Ring 0: Center square
+            (1024.0, 4096.0 + 1024.0, 512),  // Ring 1: 8 chunks
+            (4096.0 + 1024.0, 10000.0, 256), // Ring 2: 8 chunks
         ];
 
+        // First, spawn the center plane as parent - all other meshes will be children
+        let (_, center_outer, center_subdivs) = lod_rings[0];
+        let center_cell_size = (center_outer * 2.0) / center_subdivs as f32;
+        let center_plane = Plane3d::new(Vec3::Y, Vec2::splat(center_outer));
+        let center_mesh = center_plane.mesh().subdivisions(center_subdivs).build();
+
+        let parent_entity = commands
+            .spawn((
+                Mesh3d(meshes.add(center_mesh)),
+                MeshMaterial3d(ocean_material.clone()),
+                Transform::from_translation(Vec3::ZERO),
+                OceanSurfaceMarker,
+                OceanSnapSize(center_cell_size),
+                NotShadowCaster,
+                NotShadowReceiver,
+            ))
+            .id();
+
+        // Now spawn outer rings as children of the center plane
         for (ring_idx, (inner_half, outer_half, subdivisions)) in lod_rings.iter().enumerate() {
-            let cell_size = if *inner_half == 0.0 {
-                // Center ring: cell size based on full extent
-                (outer_half * 2.0) / *subdivisions as f32
-            } else {
-                // Outer rings: cell size based on chunk width
-                (outer_half - inner_half) / *subdivisions as f32
-            };
-
+            // Skip ring 0 (already spawned as parent)
             if *inner_half == 0.0 {
-                // Ring 0: Single center square plane
-                let plane = Plane3d::new(Vec3::Y, Vec2::splat(*outer_half));
+                continue;
+            }
+
+            let side_width = outer_half - inner_half;
+            let side_length = inner_half * 2.0;
+            let side_subdivs_width = *subdivisions;
+            let side_subdivs_length = ((side_length / side_width) * *subdivisions as f32) as u32;
+
+            // Side chunks (N, S, E, W) - rectangles with center offset
+            let side_chunks = [
+                // North
+                (
+                    0.0,
+                    *inner_half + side_width / 2.0,
+                    *inner_half,
+                    side_width / 2.0,
+                    side_subdivs_length,
+                    side_subdivs_width,
+                ),
+                // South
+                (
+                    0.0,
+                    -(*inner_half + side_width / 2.0),
+                    *inner_half,
+                    side_width / 2.0,
+                    side_subdivs_length,
+                    side_subdivs_width,
+                ),
+                // East
+                (
+                    *inner_half + side_width / 2.0,
+                    0.0,
+                    side_width / 2.0,
+                    *inner_half,
+                    side_subdivs_width,
+                    side_subdivs_length,
+                ),
+                // West
+                (
+                    -(*inner_half + side_width / 2.0),
+                    0.0,
+                    side_width / 2.0,
+                    *inner_half,
+                    side_subdivs_width,
+                    side_subdivs_length,
+                ),
+            ];
+
+            // Corner chunks (NE, NW, SE, SW)
+            let corner_offset = *inner_half + side_width / 2.0;
+            let corner_half = side_width / 2.0;
+            let corner_chunks = [
+                (corner_offset, corner_offset),
+                (-corner_offset, corner_offset),
+                (corner_offset, -corner_offset),
+                (-corner_offset, -corner_offset),
+            ];
+
+            // Spawn side chunks as children
+            for (cx, cz, half_x, half_z, subdivs_x, subdivs_z) in side_chunks {
+                let plane = Plane3d::new(Vec3::Y, Vec2::new(half_x, half_z));
+                let mesh = plane.mesh().subdivisions(subdivs_x.max(subdivs_z)).build();
+                let child = commands
+                    .spawn((
+                        Mesh3d(meshes.add(mesh)),
+                        MeshMaterial3d(ocean_material.clone()),
+                        Transform::from_xyz(cx, 0.0, cz),
+                        NotShadowCaster,
+                        NotShadowReceiver,
+                    ))
+                    .id();
+                commands.entity(parent_entity).add_child(child);
+            }
+
+            // Spawn corner chunks as children
+            for (cx, cz) in corner_chunks {
+                let plane = Plane3d::new(Vec3::Y, Vec2::splat(corner_half));
                 let mesh = plane.mesh().subdivisions(*subdivisions).build();
+                let child = commands
+                    .spawn((
+                        Mesh3d(meshes.add(mesh)),
+                        MeshMaterial3d(ocean_material.clone()),
+                        Transform::from_xyz(cx, 0.0, cz),
+                        NotShadowCaster,
+                        NotShadowReceiver,
+                    ))
+                    .id();
+                commands.entity(parent_entity).add_child(child);
+            }
 
-                commands.spawn((
-                    Mesh3d(meshes.add(mesh)),
-                    MeshMaterial3d(ocean_material.clone()),
-                    Transform::from_translation(Vec3::ZERO),
-                    OceanSurfaceMarker,
-                    OceanSnapSize(cell_size),
-                    NotShadowCaster,
-                    NotShadowReceiver,
-                ));
+            // Create stitch strips as children
+            let (_, prev_outer, prev_subdivisions) = lod_rings[ring_idx - 1];
+            let fine_step = if ring_idx == 1 {
+                (prev_outer * 2.0) / prev_subdivisions as f32
             } else {
-                // Ring 1+: 8 plane chunks around the inner ring
-                let side_width = outer_half - inner_half;
-                let side_length = inner_half * 2.0;
-                let side_subdivs_width = *subdivisions;
-                let side_subdivs_length = ((side_length / side_width) * *subdivisions as f32) as u32;
+                (prev_outer - lod_rings[ring_idx - 2].1) / prev_subdivisions as f32
+            };
+            let coarse_step = (outer_half - inner_half) / *subdivisions as f32;
 
-                // Side chunks (N, S, E, W) - rectangles with center offset
-                // Format: (center_x, center_z, half_size_x, half_size_z, subdivs_x, subdivs_z)
-                let side_chunks = [
-                    // North: center at (0, inner + side_width/2)
-                    (0.0, *inner_half + side_width / 2.0, *inner_half, side_width / 2.0, side_subdivs_length, side_subdivs_width),
-                    // South: center at (0, -(inner + side_width/2))
-                    (0.0, -(*inner_half + side_width / 2.0), *inner_half, side_width / 2.0, side_subdivs_length, side_subdivs_width),
-                    // East: center at (inner + side_width/2, 0)
-                    (*inner_half + side_width / 2.0, 0.0, side_width / 2.0, *inner_half, side_subdivs_width, side_subdivs_length),
-                    // West: center at (-(inner + side_width/2), 0)
-                    (-(*inner_half + side_width / 2.0), 0.0, side_width / 2.0, *inner_half, side_subdivs_width, side_subdivs_length),
-                ];
+            for direction in [
+                StitchDirection::North,
+                StitchDirection::South,
+                StitchDirection::East,
+                StitchDirection::West,
+            ] {
+                let stitch_mesh = Self::create_stitch_strip(
+                    *inner_half,
+                    fine_step,
+                    coarse_step,
+                    *inner_half,
+                    *outer_half,
+                    direction,
+                );
 
-                // Corner chunks (NE, NW, SE, SW) - squares
-                // Format: (center_x, center_z, half_size)
-                let corner_offset = *inner_half + side_width / 2.0;
-                let corner_half = side_width / 2.0;
-                let corner_chunks = [
-                    (corner_offset, corner_offset),   // NE
-                    (-corner_offset, corner_offset),  // NW
-                    (corner_offset, -corner_offset),  // SE
-                    (-corner_offset, -corner_offset), // SW
-                ];
-
-                // Spawn side chunks
-                for (cx, cz, half_x, half_z, subdivs_x, subdivs_z) in side_chunks {
-                    let plane = Plane3d::new(Vec3::Y, Vec2::new(half_x, half_z));
-                    let mesh = plane.mesh().subdivisions(subdivs_x.max(subdivs_z)).build();
-                    commands.spawn((
-                        Mesh3d(meshes.add(mesh)),
-                        MeshMaterial3d(ocean_material.clone()),
-                        Transform::from_xyz(cx, 0.0, cz),
-                        OceanSurfaceMarker,
-                        OceanSnapSize(cell_size),
-                        NotShadowCaster,
-                        NotShadowReceiver,
-                    ));
-                }
-
-                // Spawn corner chunks
-                for (cx, cz) in corner_chunks {
-                    let plane = Plane3d::new(Vec3::Y, Vec2::splat(corner_half));
-                    let mesh = plane.mesh().subdivisions(*subdivisions).build();
-                    commands.spawn((
-                        Mesh3d(meshes.add(mesh)),
-                        MeshMaterial3d(ocean_material.clone()),
-                        Transform::from_xyz(cx, 0.0, cz),
-                        OceanSurfaceMarker,
-                        OceanSnapSize(cell_size),
-                        NotShadowCaster,
-                        NotShadowReceiver,
-                    ));
-                }
-
-                // Create stitch strips to connect to the previous (finer) ring
-                let (_, prev_outer, prev_subdivisions) = lod_rings[ring_idx - 1];
-                let fine_step = if ring_idx == 1 {
-                    (prev_outer * 2.0) / prev_subdivisions as f32
-                } else {
-                    (prev_outer - lod_rings[ring_idx - 2].1) / prev_subdivisions as f32
-                };
-                let coarse_step = cell_size;
-
-                for direction in [
-                    StitchDirection::North,
-                    StitchDirection::South,
-                    StitchDirection::East,
-                    StitchDirection::West,
-                ] {
-                    let stitch_mesh = Self::create_stitch_strip(
-                        *inner_half,
-                        fine_step,
-                        coarse_step,
-                        *inner_half,  // boundary extent
-                        *outer_half,
-                        direction,
-                    );
-
-                    commands.spawn((
+                let child = commands
+                    .spawn((
                         Mesh3d(meshes.add(stitch_mesh)),
                         MeshMaterial3d(ocean_material.clone()),
                         Transform::from_translation(Vec3::ZERO),
-                        OceanSurfaceMarker,
-                        OceanSnapSize(cell_size),
                         NotShadowCaster,
                         NotShadowReceiver,
-                    ));
-                }
+                    ))
+                    .id();
+                commands.entity(parent_entity).add_child(child);
             }
         }
     }
-    /// Make the ocean mesh follow the camera's XZ position for infinite ocean illusion
-    /// Each ring snaps to its own cell size to prevent vertex swimming
+    /// Make the ocean parent mesh follow the camera's XZ position for infinite ocean illusion
+    /// Only the parent (center plane) has OceanSnapSize - children follow automatically
     fn ocean_follow_camera(
         camera_query: Query<&Transform, With<OceanCamera>>,
         mut ocean_query: Query<
@@ -495,12 +522,11 @@ impl OceanCamera {
         };
 
         for (mut ocean_transform, snap_size) in &mut ocean_query {
-            // Snap camera position to this ring's grid cell size
+            // Snap to grid based on center plane's cell size
             let snap = snap_size.0;
             let snapped_x = (camera_transform.translation.x / snap).floor() * snap;
             let snapped_z = (camera_transform.translation.z / snap).floor() * snap;
 
-            // Follow camera on XZ plane (snapped), keep Y at 0
             ocean_transform.translation.x = snapped_x;
             ocean_transform.translation.z = snapped_z;
         }
@@ -509,11 +535,11 @@ impl OceanCamera {
     /// Create a stitch strip that connects a fine (inner) ring edge to a coarse (outer) ring edge
     /// This bridges the vertex density gap between LOD levels (corners handled by corner chunks)
     fn create_stitch_strip(
-        boundary: f32,        // The boundary position (e.g., 1024.0)
-        fine_step: f32,       // Step size of finer (inner) ring
-        coarse_step: f32,     // Step size of coarser (outer) ring
-        fine_extent: f32,     // Half-extent of the edge to stitch
-        _coarse_extent: f32,  // Half-extent of coarse ring (unused)
+        boundary: f32,       // The boundary position (e.g., 1024.0)
+        fine_step: f32,      // Step size of finer (inner) ring
+        coarse_step: f32,    // Step size of coarser (outer) ring
+        fine_extent: f32,    // Half-extent of the edge to stitch
+        _coarse_extent: f32, // Half-extent of coarse ring (unused)
         direction: StitchDirection,
     ) -> Mesh {
         use bevy::mesh::{Indices, PrimitiveTopology};
@@ -553,7 +579,12 @@ impl OceanCamera {
                 }
 
                 Self::generate_stitch_triangles(
-                    &mut indices, 0, fine_count, coarse_count, ratio, false,
+                    &mut indices,
+                    0,
+                    fine_count,
+                    coarse_count,
+                    ratio,
+                    false,
                 );
             }
             StitchDirection::South => {
@@ -575,7 +606,12 @@ impl OceanCamera {
                 }
 
                 Self::generate_stitch_triangles(
-                    &mut indices, 0, fine_count, coarse_count, ratio, true,
+                    &mut indices,
+                    0,
+                    fine_count,
+                    coarse_count,
+                    ratio,
+                    true,
                 );
             }
             StitchDirection::East => {
@@ -597,7 +633,12 @@ impl OceanCamera {
                 }
 
                 Self::generate_stitch_triangles(
-                    &mut indices, 0, fine_count, coarse_count, ratio, true,
+                    &mut indices,
+                    0,
+                    fine_count,
+                    coarse_count,
+                    ratio,
+                    true,
                 );
             }
             StitchDirection::West => {
@@ -619,7 +660,12 @@ impl OceanCamera {
                 }
 
                 Self::generate_stitch_triangles(
-                    &mut indices, 0, fine_count, coarse_count, ratio, false,
+                    &mut indices,
+                    0,
+                    fine_count,
+                    coarse_count,
+                    ratio,
+                    false,
                 );
             }
         }
