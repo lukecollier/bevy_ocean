@@ -85,6 +85,9 @@ pub struct OceanSettings {
     pub choppiness: f32,
     /// Water depth in meters - affects wave dispersion in shallow water (default 500.0)
     pub depth: f32,
+    /// Cascades parameters copied from the material settings
+    pub cascades: [CascadeParams; 8],
+    pub cascade_count: u32,
 }
 
 /// Ocean rendering parameters that can be modified at runtime.
@@ -354,9 +357,9 @@ impl OceanCamera {
         // Ring 1+ are 8 plane chunks arranged around the previous ring (children)
         // Uses powers of 2 so boundaries align exactly on vertex grids
         let lod_rings: [(f32, f32, u32); 3] = [
-            (0.0, 1024.0, 512),              // Ring 0: Center square
-            (1024.0, 4096.0 + 1024.0, 512),  // Ring 1: 8 chunks
-            (4096.0 + 1024.0, 10000.0, 256), // Ring 2: 8 chunks
+            (0.0, 1024.0, 1024),            // Ring 0: Center square
+            (1024.0, 4096.0 + 1024.0, 128), // Ring 1: 8 chunks
+            (4096.0 + 1024.0, 10000.0, 64), // Ring 2: 8 chunks
         ];
 
         // First, spawn the center plane as parent - all other meshes will be children
@@ -817,6 +820,8 @@ impl Plugin for OceanPlugin {
             swell: self.swell,
             choppiness: self.choppiness,
             depth: self.depth,
+            cascades: self.params.cascades,
+            cascade_count: self.params.cascade_count,
         });
 
         app.add_systems(Startup, (setup, OceanCamera::spawn_ocean).chain());
@@ -840,6 +845,8 @@ impl Plugin for OceanPlugin {
             swell: self.swell,
             choppiness: self.choppiness,
             depth: self.depth,
+            cascades: self.params.cascades,
+            cascade_count: self.params.cascade_count,
         });
         render_app.insert_resource(self.params);
         // Run init_ocean_pipeline in ExtractCommands phase so it runs after extraction
@@ -910,7 +917,7 @@ pub fn setup(
     let displacement_descriptor = TextureDescriptor {
         label: Some("Displacement"),
         size: texture_size,
-        mip_level_count: 2,
+        mip_level_count: 3,
         sample_count: 1,
         dimension: TextureDimension::D2,
         format: TextureFormat::Rgba32Float,
@@ -922,7 +929,7 @@ pub fn setup(
     let derivatives_descriptor = TextureDescriptor {
         label: Some("Derivatives"),
         size: texture_size,
-        mip_level_count: 2,
+        mip_level_count: 3,
         sample_count: 1,
         dimension: TextureDimension::D2,
         format: TextureFormat::Rgba32Float,
@@ -959,7 +966,7 @@ pub fn setup(
     let foam_persistence_descriptor = TextureDescriptor {
         label: Some("Foam Persistence"),
         size: texture_size,
-        mip_level_count: 2,
+        mip_level_count: 3,
         sample_count: 1,
         dimension: TextureDimension::D2,
         format: TextureFormat::R32Float,
@@ -1016,32 +1023,19 @@ fn init_ocean_pipeline(
         .get(&ocean_images.foam_persistence_image)
         .unwrap();
 
-    let cascade_data = [
-        OceanSurfaceCascadeData {
-            displacement: &displacement_texture.texture,
-            derivatives: &derivatives_texture.texture,
-            foam_persistence: &foam_persistence_texture.texture,
-            length_scale: 500.,
-        },
-        OceanSurfaceCascadeData {
-            displacement: &displacement_texture.texture,
-            derivatives: &derivatives_texture.texture,
-            foam_persistence: &foam_persistence_texture.texture,
-            length_scale: 85.,
-        },
-        OceanSurfaceCascadeData {
-            displacement: &displacement_texture.texture,
-            derivatives: &derivatives_texture.texture,
-            foam_persistence: &foam_persistence_texture.texture,
-            length_scale: 10.,
-        },
-    ];
+    let cascade_data: [OceanSurfaceCascadeData; NUMBER_OF_CASCADES as usize] =
+        std::array::from_fn(|idx| OceanSurfaceCascadeData {
+            length_scale: settings.cascades[idx].length_scale,
+        });
     let ocean_resources = OceanPipeline {
         ocean_surface: OceanSurface::new(
             &render_device,
             settings.quality as u32,
             ocean_params,
             cascade_data,
+            &displacement_texture.texture,
+            &derivatives_texture.texture,
+            &foam_persistence_texture.texture,
         ),
     };
     commands.insert_resource(ocean_resources);

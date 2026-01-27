@@ -8,12 +8,12 @@ use bevy::render::render_resource::TextureUsages;
 use bevy::render::renderer::RenderDevice;
 use bevy::render::renderer::RenderQueue;
 
+use crate::ocean::OceanSpectrumParameters;
 use crate::ocean::pipelines::FFT;
 use crate::ocean::pipelines::FoamPersistencePipeline;
 use crate::ocean::pipelines::InitialSpectrumPipeline;
 use crate::ocean::pipelines::TimeDependentSpectrumPipeline;
 use crate::ocean::pipelines::WavesDataMergePipeline;
-use crate::ocean::OceanSpectrumParameters;
 
 /// Internal struct for per-cascade initialization
 struct CascadeInitializer {
@@ -91,10 +91,7 @@ pub struct OceanSurfaceParameters {
     pub depth: f32,
 }
 
-pub struct OceanSurfaceCascadeData<'a> {
-    pub displacement: &'a Texture,
-    pub derivatives: &'a Texture,
-    pub foam_persistence: &'a Texture,
+pub struct OceanSurfaceCascadeData {
     pub length_scale: f32,
 }
 
@@ -104,6 +101,9 @@ impl<const N: usize> OceanSurface<N> {
         size: u32,
         params: OceanSurfaceParameters,
         cascade_data: [OceanSurfaceCascadeData; N],
+        displacement_texture: &Texture,
+        derivatives_texture: &Texture,
+        foam_persistence_texture: &Texture,
     ) -> Self {
         assert!(N > 1);
         let layers = N as u32;
@@ -182,9 +182,7 @@ impl<const N: usize> OceanSurface<N> {
 
         // Create per-cascade initializers (for initialization with different parameters)
         let cascades: [CascadeInitializer; N] = std::array::from_fn(|idx| {
-            let OceanSurfaceCascadeData {
-                length_scale, ..
-            } = cascade_data[idx];
+            let length_scale = cascade_data[idx].length_scale;
             let params = if idx == 0 {
                 // first cascade
                 let next_length_scale = cascade_data[idx + 1].length_scale;
@@ -239,12 +237,14 @@ impl<const N: usize> OceanSurface<N> {
             &amp_dyx_dyz_texture,
         );
 
-        let fft = FFT::init(size, layers, device, &amp_dx_dz_texture, &amp_dyx_dyz_texture);
+        let fft = FFT::init(
+            size,
+            layers,
+            device,
+            &amp_dx_dz_texture,
+            &amp_dyx_dyz_texture,
+        );
 
-        // Use displacement texture from first cascade (they're all the same shared array)
-        let displacement_texture = cascade_data[0].displacement;
-        let derivatives_texture = cascade_data[0].derivatives;
-        let foam_persistence_texture = cascade_data[0].foam_persistence;
 
         let waves_data_merge_pipeline = WavesDataMergePipeline::init(
             device,
@@ -294,7 +294,8 @@ impl<const N: usize> OceanSurface<N> {
         }
 
         // Run per-frame simulation (processes all layers at once)
-        self.time_dependent_spectrum_pipeline.dispatch(encoder, time);
+        self.time_dependent_spectrum_pipeline
+            .dispatch(encoder, time);
         self.fft.dispatch(encoder);
         self.waves_data_merge_pipeline.dispatch(encoder, dt);
         self.foam_persistence_pipeline.dispatch(encoder, dt);

@@ -26,6 +26,8 @@ pub struct FoamPersistencePipeline {
     // Store mip level view for foam persistence (level 1 only)
     #[allow(dead_code)]
     foam_mip1_view: TextureView,
+    #[allow(dead_code)]
+    foam_mip2_view: TextureView,
 }
 
 impl FoamPersistencePipeline {
@@ -73,6 +75,17 @@ impl FoamPersistencePipeline {
                     },
                     count: None,
                 },
+                // foam_persistence mip 2 (write)
+                BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: ShaderStages::COMPUTE,
+                    ty: BindingType::StorageTexture {
+                        view_dimension: TextureViewDimension::D2Array,
+                        format: TextureFormat::R32Float,
+                        access: StorageTextureAccess::WriteOnly,
+                    },
+                    count: None,
+                },
             ],
         );
 
@@ -88,9 +101,7 @@ impl FoamPersistencePipeline {
         let shader = unsafe {
             device.create_shader_module(ShaderModuleDescriptor {
                 label: Some("Foam persistence shader"),
-                source: ShaderSource::Wgsl(
-                    include_str!("../../shaders/foam_persistence.wgsl").into(),
-                ),
+                source: ShaderSource::Wgsl(include_str!("shaders/foam_persistence.wgsl").into()),
             })
         };
 
@@ -107,6 +118,13 @@ impl FoamPersistencePipeline {
         let foam_mip1_view = foam_persistence_texture.create_view(&TextureViewDescriptor {
             dimension: Some(TextureViewDimension::D2Array),
             base_mip_level: 1,
+            mip_level_count: Some(1),
+            ..Default::default()
+        });
+
+        let foam_mip2_view = foam_persistence_texture.create_view(&TextureViewDescriptor {
+            dimension: Some(TextureViewDimension::D2Array),
+            base_mip_level: 2,
             mip_level_count: Some(1),
             ..Default::default()
         });
@@ -142,6 +160,11 @@ impl FoamPersistencePipeline {
                     binding: 2,
                     resource: BindingResource::TextureView(&foam_mip1_view),
                 },
+                // Foam mip level 2
+                BindGroupEntry {
+                    binding: 3,
+                    resource: BindingResource::TextureView(&foam_mip2_view),
+                },
             ],
         );
 
@@ -151,6 +174,7 @@ impl FoamPersistencePipeline {
             textures_bind_group,
             pipeline,
             foam_mip1_view,
+            foam_mip2_view,
         }
     }
 
