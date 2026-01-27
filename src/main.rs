@@ -14,7 +14,7 @@ use bevy_flycam::PlayerPlugin;
 use bevy_rand::{plugin::EntropyPlugin, prelude::WyRand};
 
 use bevy_ocean::cloud_plugin::CloudPlugin;
-use bevy_ocean::day_night_plugin::DayNightCyclePlugin;
+use bevy_ocean::day_night_plugin::{DayNightCyclePlugin, SunDirectionControl};
 use bevy_ocean::ocean_plugin::{OceanParams, OceanPlugin};
 use bevy_ocean::sky_plugin::SkyPlugin;
 
@@ -39,7 +39,11 @@ fn main() -> AppExit {
         .run()
 }
 
-fn startup_ui(mut commands: Commands, params: ResMut<OceanParams>) {
+fn startup_ui(
+    mut commands: Commands,
+    params: ResMut<OceanParams>,
+    sun_control: ResMut<SunDirectionControl>,
+) {
     commands.spawn((
         Node {
             padding: UiRect::px(6., 6., 6., 6.),
@@ -113,6 +117,16 @@ fn startup_ui(mut commands: Commands, params: ResMut<OceanParams>) {
                 1,
                 |ref mut params, value| { params.sss_intensity = value }
             ),
+            app_slider_sun(
+                "sun yaw",
+                sun_control.angle_degrees,
+                0.,
+                360.,
+                1,
+                |ref mut control, value| {
+                    control.angle_degrees = value;
+                },
+            ),
         ],
     ));
 }
@@ -153,6 +167,47 @@ fn app_slider(
                 ),
                 observe(slider_self_update),
                 observe(make_slider(op)) // Spawn((Text::new("Normal"), ThemedText)),
+            )
+        ],
+    )
+}
+
+fn make_sun_slider(
+    op: fn(ResMut<SunDirectionControl>, f32) -> (),
+) -> impl FnMut(On<ValueChange<f32>>, ResMut<SunDirectionControl>) -> () {
+    move |value_change, controls| {
+        op(controls, value_change.value);
+    }
+}
+
+fn app_slider_sun(
+    label: &str,
+    value: f32,
+    min: f32,
+    max: f32,
+    precision: i32,
+    op: fn(ResMut<SunDirectionControl>, f32) -> (),
+) -> impl Bundle {
+    (
+        Node {
+            width: Val::Percent(100.),
+            height: Val::Auto,
+            align_items: AlignItems::Start,
+            justify_content: JustifyContent::Start,
+            display: Display::Flex,
+            flex_direction: FlexDirection::Row,
+            row_gap: px(10),
+            ..default()
+        },
+        children![
+            (Text::new(label), ThemedText),
+            (
+                slider(
+                    SliderProps { min, max, value },
+                    (SliderStep(1.), SliderPrecision(precision)),
+                ),
+                observe(slider_self_update),
+                observe(make_sun_slider(op))
             )
         ],
     )

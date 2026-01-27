@@ -26,6 +26,13 @@ var out_displacement_mip2: texture_storage_2d_array<rgba32float, write>;
 @group(0) @binding(7)
 var out_derivatives_mip2: texture_storage_2d_array<rgba32float, write>;
 
+// Output textures - mip level 3
+@group(0) @binding(8)
+var out_displacement_mip3: texture_storage_2d_array<rgba32float, write>;
+
+@group(0) @binding(9)
+var out_derivatives_mip3: texture_storage_2d_array<rgba32float, write>;
+
 struct Parameters {
   lambda: f32,
   delta_time: f32,
@@ -112,6 +119,31 @@ fn merge(
                                     i32(workgroup_id.y * 4u + local_id.y));
         textureStore(out_displacement_mip2, mip2_coords, layer, avg_disp_mip2);
         textureStore(out_derivatives_mip2, mip2_coords, layer, avg_deriv_mip2);
+    }
+
+    // === Mip 3 (2x2 threads active) ===
+    if (local_id.x < 2u && local_id.y < 2u) {
+        let origin = vec2<i32>(i32(workgroup_id.x * 16u), i32(workgroup_id.y * 16u));
+        let local_base = vec2<i32>(i32(local_id.x) * 8, i32(local_id.y) * 8);
+
+        var sum_disp = vec4<f32>(0.0);
+        var sum_deriv = vec4<f32>(0.0);
+
+        for (var dy = 0; dy < 8; dy = dy + 1) {
+            for (var dx = 0; dx < 8; dx = dx + 1) {
+                let sample = sample_at(origin + local_base + vec2<i32>(dx, dy), layer);
+                sum_disp = sum_disp + sample.displacement;
+                sum_deriv = sum_deriv + sample.derivatives;
+            }
+        }
+
+        let avg_disp_mip3 = sum_disp * 0.015625;
+        let avg_deriv_mip3 = sum_deriv * 0.015625;
+
+        let mip3_coords = vec2<i32>(i32(workgroup_id.x * 2u + local_id.x),
+                                    i32(workgroup_id.y * 2u + local_id.y));
+        textureStore(out_displacement_mip3, mip3_coords, layer, avg_disp_mip3);
+        textureStore(out_derivatives_mip3, mip3_coords, layer, avg_deriv_mip3);
     }
 }
 

@@ -32,6 +32,38 @@ pub enum Quality {
     VeryLow = 64,
 }
 
+impl Quality {
+    fn lod_rings(&self) -> [(f32, f32, u32); 3] {
+        match self {
+            Quality::Ultra => [
+                (0.0, 1024.0, 1024),            // Ring 0: Center square
+                (1024.0, 4096.0 + 1024.0, 128), // Ring 1: 8 chunks
+                (4096.0 + 1024.0, 10000.0, 64), // Ring 2: 8 chunks
+            ],
+            Quality::High => [
+                (0.0, 1024.0, 4096),             // Ring 0: Center square
+                (1024.0, 4096.0 + 1024.0, 2048), // Ring 1: 8 chunks
+                (4096.0 + 1024.0, 10000.0, 64),  // Ring 2: 8 chunks
+            ],
+            Quality::Medium => [
+                (0.0, 1024.0, 2048),             // Ring 0: Center square
+                (1024.0, 4096.0 + 1024.0, 1024), // Ring 1: 8 chunks
+                (4096.0 + 1024.0, 10000.0, 512), // Ring 2: 8 chunks
+            ],
+            Quality::Low => [
+                (0.0, 512.0, 512),                             // Ring 0: Center square
+                (512.0, 4096.0 + 512.0, 256),                  // Ring 1: 8 chunks
+                (4096.0 + 512.0, (4096.0 + 512.0) * 2.0, 128), // Ring 2: 8 chunks
+            ],
+            Quality::VeryLow => [
+                (0.0, 1024.0, 128),             // Ring 0: Center square
+                (1024.0, 4096.0 + 1024.0, 64),  // Ring 1: 8 chunks
+                (4096.0 + 1024.0, 10000.0, 32), // Ring 2: 8 chunks
+            ],
+        }
+    }
+}
+
 pub struct OceanPlugin {
     quality: Quality,
     params: OceanParams,
@@ -356,11 +388,7 @@ impl OceanCamera {
         // Ring 0 is a single center square (the parent)
         // Ring 1+ are 8 plane chunks arranged around the previous ring (children)
         // Uses powers of 2 so boundaries align exactly on vertex grids
-        let lod_rings: [(f32, f32, u32); 3] = [
-            (0.0, 1024.0, 1024),            // Ring 0: Center square
-            (1024.0, 4096.0 + 1024.0, 128), // Ring 1: 8 chunks
-            (4096.0 + 1024.0, 10000.0, 64), // Ring 2: 8 chunks
-        ];
+        let lod_rings: [(f32, f32, u32); 3] = ocean_settings.quality.lod_rings();
 
         // First, spawn the center plane as parent - all other meshes will be children
         let (_, center_outer, center_subdivs) = lod_rings[0];
@@ -917,7 +945,7 @@ pub fn setup(
     let displacement_descriptor = TextureDescriptor {
         label: Some("Displacement"),
         size: texture_size,
-        mip_level_count: 3,
+        mip_level_count: 4,
         sample_count: 1,
         dimension: TextureDimension::D2,
         format: TextureFormat::Rgba32Float,
@@ -929,7 +957,7 @@ pub fn setup(
     let derivatives_descriptor = TextureDescriptor {
         label: Some("Derivatives"),
         size: texture_size,
-        mip_level_count: 3,
+        mip_level_count: 4,
         sample_count: 1,
         dimension: TextureDimension::D2,
         format: TextureFormat::Rgba32Float,
@@ -966,7 +994,7 @@ pub fn setup(
     let foam_persistence_descriptor = TextureDescriptor {
         label: Some("Foam Persistence"),
         size: texture_size,
-        mip_level_count: 3,
+        mip_level_count: 4,
         sample_count: 1,
         dimension: TextureDimension::D2,
         format: TextureFormat::R32Float,

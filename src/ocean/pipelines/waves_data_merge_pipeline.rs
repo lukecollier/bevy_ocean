@@ -22,7 +22,7 @@ pub struct WavesDataMergePipeline {
     lambda: f32,
     textures_bind_group: BindGroup,
     pipeline: ComputePipeline,
-    // Store mip level views for displacement and derivatives (level 1 only)
+    // Store mip level views for displacement and derivatives
     #[allow(dead_code)]
     displacement_mip1_view: TextureView,
     #[allow(dead_code)]
@@ -31,6 +31,10 @@ pub struct WavesDataMergePipeline {
     displacement_mip2_view: TextureView,
     #[allow(dead_code)]
     derivatives_mip2_view: TextureView,
+    #[allow(dead_code)]
+    displacement_mip3_view: TextureView,
+    #[allow(dead_code)]
+    derivatives_mip3_view: TextureView,
 }
 
 impl WavesDataMergePipeline {
@@ -136,6 +140,28 @@ impl WavesDataMergePipeline {
                     },
                     count: None,
                 },
+                // out_displacement mip 3 (array)
+                BindGroupLayoutEntry {
+                    binding: 8,
+                    visibility: ShaderStages::COMPUTE,
+                    ty: BindingType::StorageTexture {
+                        view_dimension: TextureViewDimension::D2Array,
+                        format: TextureFormat::Rgba32Float,
+                        access: StorageTextureAccess::WriteOnly,
+                    },
+                    count: None,
+                },
+                // out_derivatives mip 3 (array)
+                BindGroupLayoutEntry {
+                    binding: 9,
+                    visibility: ShaderStages::COMPUTE,
+                    ty: BindingType::StorageTexture {
+                        view_dimension: TextureViewDimension::D2Array,
+                        format: TextureFormat::Rgba32Float,
+                        access: StorageTextureAccess::WriteOnly,
+                    },
+                    count: None,
+                },
             ],
         );
 
@@ -192,6 +218,20 @@ impl WavesDataMergePipeline {
         let derivatives_mip2_view = derivatives_texture.create_view(&TextureViewDescriptor {
             dimension: Some(TextureViewDimension::D2Array),
             base_mip_level: 2,
+            mip_level_count: Some(1),
+            ..Default::default()
+        });
+
+        let displacement_mip3_view = displacement_texture.create_view(&TextureViewDescriptor {
+            dimension: Some(TextureViewDimension::D2Array),
+            base_mip_level: 3,
+            mip_level_count: Some(1),
+            ..Default::default()
+        });
+
+        let derivatives_mip3_view = derivatives_texture.create_view(&TextureViewDescriptor {
+            dimension: Some(TextureViewDimension::D2Array),
+            base_mip_level: 3,
             mip_level_count: Some(1),
             ..Default::default()
         });
@@ -260,6 +300,16 @@ impl WavesDataMergePipeline {
                     binding: 7,
                     resource: BindingResource::TextureView(&derivatives_mip2_view),
                 },
+                // Displacement mip level 3
+                BindGroupEntry {
+                    binding: 8,
+                    resource: BindingResource::TextureView(&displacement_mip3_view),
+                },
+                // Derivatives mip level 3
+                BindGroupEntry {
+                    binding: 9,
+                    resource: BindingResource::TextureView(&derivatives_mip3_view),
+                },
             ],
         );
 
@@ -273,6 +323,8 @@ impl WavesDataMergePipeline {
             derivatives_mip1_view,
             displacement_mip2_view,
             derivatives_mip2_view,
+            displacement_mip3_view,
+            derivatives_mip3_view,
         }
     }
 

@@ -55,8 +55,21 @@ impl DayNightCyclePlugin {
 impl Plugin for DayNightCyclePlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(self.config);
+        app.init_resource::<SunDirectionControl>();
         app.add_systems(Startup, spawn_sun_light);
         app.add_systems(Update, day_night_cycle);
+    }
+}
+
+#[derive(Resource)]
+pub struct SunDirectionControl {
+    /// Offset added to the automatic day/night rotation, in degrees.
+    pub angle_degrees: f32,
+}
+
+impl Default for SunDirectionControl {
+    fn default() -> Self {
+        Self { angle_degrees: 0.0 }
     }
 }
 
@@ -79,8 +92,14 @@ fn day_night_cycle(
     cloud: Option<ResMut<CloudParams>>,
     mut sun_light_query: Query<(&mut DirectionalLight, &mut Transform), With<SunLight>>,
     time: Res<Time>,
+    sun_control: Option<Res<SunDirectionControl>>,
 ) {
-    let angle = (time.elapsed_secs() / config.cycle_period) * std::f32::consts::TAU;
+    let base_angle = (time.elapsed_secs() / config.cycle_period) * std::f32::consts::TAU;
+    let offset = sun_control
+        .as_ref()
+        .map(|control| control.angle_degrees.to_radians())
+        .unwrap_or(0.0);
+    let angle = base_angle + offset;
 
     // Rotate sun around the X axis (east-west arc across the sky)
     // Y = sin(angle) gives height (-1 to 1)

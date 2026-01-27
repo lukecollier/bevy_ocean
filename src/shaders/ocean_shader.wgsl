@@ -99,6 +99,7 @@ fn vertex(in: Vertex) -> OceanVertexOutput {
     // Calculate view distance for LOD-based cascade blending
     let camera_pos = view.world_position;
     let view_dist = max(length(camera_pos - world_pos.xyz), 0.01);
+    let displacement_mip_levels = f32(textureNumLevels(t_displacements));
 
     var total_displacement = vec3(0.);
     var jacobian = 0.;
@@ -107,12 +108,15 @@ fn vertex(in: Vertex) -> OceanVertexOutput {
       // Distance thresholds for including cascades (lod_cutoff of 0 means always include)
       let cascade_param = params.cascades[layer];
       if (cascade_param.lod_cutoff == 0.0 || view_dist < cascade_param.lod_cutoff) {
+        let normalized_distance = view_dist / cascade_param.length_scale;
+        // To improve our sampling we use our mip's for the texture sampling.
+        let displacement_lod_level = clamp(log2(normalized_distance), 0.0, displacement_mip_levels); 
         // Calculate LOD scales based on distance
         // Each cascade fades based on: min(LOD_SCALE * LENGTH_SCALE / view_dist, 1.0)
         let lod_c0 = min(LOD_SCALE * cascade_param.length_scale / view_dist, 1.0);
         // Calculate UVs from ORIGINAL world position (before displacement)
         let uv = original_xz / cascade_param.length_scale;
-        let d0 = textureSampleLevel(t_displacements, s_ocean, uv, layer, 0.0);
+        let d0 = textureSampleLevel(t_displacements, s_ocean, uv, layer, displacement_lod_level);
         total_displacement = total_displacement + d0.xyz * lod_c0;
         jacobian = jacobian + d0.w * cascade_param.jacobian_strength;
       }
@@ -221,17 +225,17 @@ fn fragment(mesh: OceanVertexOutput) -> @location(0) vec4<f32> {
       // Combine persistent foam from cascades (lod_cutoff of 0 means always include)
       if (cascade_param.lod_cutoff == 0.0 || view_dist < cascade_param.lod_cutoff) {
         base_turbulence = base_turbulence + foam_persistent * lod_foam * cascade_param.foam_strength;
+        // Sample foam texture at multiple scales as noise to break up the pattern
+        // Use the cascade UVs for natural multi-scale variation
+        let foam_uv = uv * params.foam_tile_scale;
+
+        // Use s_ocean sampler (configured with repeat mode) for foam texture
+        let noise = textureSample(t_foam, s_ocean, foam_uv).r;
+
+        // Combine noise at different scales (matching reference - no LOD scaling on noise)
+        foam_noise = foam_noise + noise * cascade_param.foam_strength;
       }
 
-      // Sample foam texture at multiple scales as noise to break up the pattern
-      // Use the cascade UVs for natural multi-scale variation
-      let foam_uv = uv * params.foam_tile_scale;
-
-      // Use s_ocean sampler (configured with repeat mode) for foam texture
-      let noise = textureSample(t_foam, s_ocean, foam_uv).r;
-
-      // Combine noise at different scales (matching reference - no LOD scaling on noise)
-      foam_noise = foam_noise + noise * cascade_param.foam_strength;
     }
 
     // Compute normal from blended derivatives (per-pixel)
@@ -353,7 +357,6 @@ fn fragment(mesh: OceanVertexOutput) -> @location(0) vec4<f32> {
     // Distance fog - blend to horizon color at distance
     let fog_factor = smoothstep(params.fog_start, params.fog_end, view_dist);
     ocean_color = mix(ocean_color, params.fog_color, fog_factor);
-
 
     return vec4(ocean_color, 1.0);
 }
