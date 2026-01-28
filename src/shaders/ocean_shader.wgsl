@@ -198,6 +198,10 @@ fn fragment(mesh: OceanVertexOutput) -> @location(0) vec4<f32> {
     let view_dir = normalize(camera_pos - mesh.world_position.xyz);
     let view_dist = max(length(camera_pos - mesh.world_position.xyz), 0.01);
 
+
+    let t_foam_miplevels = f32(textureNumLevels(t_foam_persistences));
+    let t_derivs_miplevels = f32(textureNumLevels(t_derivatives));
+
     // Sample derivatives per-pixel for smooth lighting (always sample all, blend with LOD)
 
     var blended_deriv = vec4(0.);
@@ -209,7 +213,9 @@ fn fragment(mesh: OceanVertexOutput) -> @location(0) vec4<f32> {
       let lod_c = min(LOD_SCALE * cascade_param.length_scale / view_dist, 1.0);
       // Use original (pre-displacement) position for UVs, matching old shader behavior
       let uv = mesh.original_xz / params.cascades[layer].length_scale;
-      let deriv = textureSample(t_derivatives, s_ocean, uv, layer);
+      let normalized_distance = view_dist / cascade_param.length_scale;
+      let deriv_lod_level = clamp(log2(normalized_distance), 0.0, t_derivs_miplevels); 
+      let deriv = textureSampleLevel(t_derivatives, s_ocean, uv, layer, deriv_lod_level);
 
       // Blend derivatives based on LOD factors
       blended_deriv = blended_deriv + deriv * lod_c;
@@ -218,7 +224,8 @@ fn fragment(mesh: OceanVertexOutput) -> @location(0) vec4<f32> {
       if (cascade_param.lod_cutoff == 0.0 || view_dist < cascade_param.lod_cutoff) {
         // Sample persistent foam from compute shader (has exponential decay applied)
         // Each cascade contributes foam at its respective scale
-        let foam_persistent = textureSample(t_foam_persistences, s_ocean, uv, layer).r;
+        let foam_lod_level = clamp(log2(normalized_distance), 0.0, t_foam_miplevels); 
+        let foam_persistent = textureSampleLevel(t_foam_persistences, s_ocean, uv, layer, foam_lod_level).r;
         // Blend persistent foam from all cascades with distance-based weighting
         // Use view_dist (with max protection) for consistent LOD calculations
         let lod_foam = min(LOD_SCALE * cascade_param.length_scale / view_dist, 1.0);
@@ -233,7 +240,6 @@ fn fragment(mesh: OceanVertexOutput) -> @location(0) vec4<f32> {
         // Combine noise at different scales (matching reference - no LOD scaling on noise)
         foam_noise = foam_noise + noise * cascade_param.foam_strength;
       }
-
     }
 
     // Compute normal from blended derivatives (per-pixel)

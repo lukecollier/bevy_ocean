@@ -230,31 +230,6 @@ impl OceanParams {
 
 impl Default for OceanParams {
     fn default() -> Self {
-        let cascade_params = [
-            CascadeParams {
-                length_scale: 500.,
-                jacobian_strength: 0.6,
-                lod_cutoff: 0.,
-                foam_strength: 0.6,
-            },
-            CascadeParams {
-                length_scale: 85.,
-                jacobian_strength: 0.17,
-                lod_cutoff: 2000.,
-                foam_strength: 0.25,
-            },
-            CascadeParams {
-                length_scale: 10.,
-                jacobian_strength: 0.23,
-                lod_cutoff: 300.,
-                foam_strength: 0.16,
-            },
-            CascadeParams::default(),
-            CascadeParams::default(),
-            CascadeParams::default(),
-            CascadeParams::default(),
-            CascadeParams::default(),
-        ];
         Self {
             displacement_scale: 1.0,
             normal_strength: 0.3,
@@ -276,8 +251,8 @@ impl Default for OceanParams {
             sss_color: ocean::SSS,
             foam_color: ocean::FOAM,
             ambient_color: ocean::AMBIENT,
-            cascades: cascade_params,
-            cascade_count: cascade_params.len() as u32,
+            cascades: OceanParams::default_cascade(),
+            cascade_count: 3,
             _padding: 0.,
         }
     }
