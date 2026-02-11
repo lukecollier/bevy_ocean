@@ -190,7 +190,7 @@ fn shoal_and_break(depth: f32) -> f32 {
     return shoal * breaking;
 }
 
-// Returns vec4: xyz = displacement, w = breaking foam (0..1)
+// Returns vec4: xyz = displacement, w = Jacobian (surface fold-over detection)
 fn shore_wave_displacement(
     sdf_grad: vec2<f32>,
     base_amplitude: f32,
@@ -198,51 +198,89 @@ fn shore_wave_displacement(
     depth: f32,
 ) -> vec4<f32> {
     var disp = vec3(0.0);
-    var foam = 0.0;
-    let num_waves = i32(shore.gerstner_num_waves);
-    let envelope = shoal_and_break(depth);
     let toward_shore = -sdf_grad;
     let Q = shore.gerstner_steepness;
-    let depth_ratio = saturate(depth / shore.max_depth);
+    let num_waves = i32(shore.gerstner_num_waves);
 
-    // Gentle spatial amplitude variation (static — doesn't bob)
-    let amp_variation = value_noise(world_xz * 0.02) * 0.4 + 0.8; // [0.8, 1.2]
+    // Noisy depth: simulates uneven seabed for varied breaking
+    let depth_noise = (fbm3(world_xz * 0.05) - 0.5) * shore.shore_foam_distance;
+    let noisy_depth = max(depth + depth_noise, 0.1);
+    let envelope = shoal_and_break(noisy_depth);
 
-    for (var i = 0; i < num_waves; i++) {
-        let fi = f32(i);
-        let harmonic = fi + 1.0;
-        let wavelength = shore.gerstner_wavelength / harmonic;
-        let k = 2.0 * PI / wavelength;
-        let w = sqrt(GRAVITY * k) * shore.gerstner_speed;
-        let amplitude = base_amplitude / harmonic * envelope * amp_variation;
+    // Spatial amplitude variation — wider range for natural look
+    let amp_variation = value_noise(world_xz * 0.01) * 0.8 + 0.2; // [0.2, 1.0]
 
-        // Slight angular spread per harmonic
-        let perp = vec2(-toward_shore.y, toward_shore.x);
-        let spread_angle = (fi - f32(num_waves - 1) * 0.5) * 0.12;
-        let dir = normalize(toward_shore * cos(spread_angle) + perp * sin(spread_angle));
+    // Jacobian partial derivatives
+    var dxx = 0.0;
+    var dzz = 0.0;
+    var dxz = 0.0;
 
-        // Along-crest envelope: creates finite wave segments
-        let along_crest = dot(perp, world_xz);
-        let env_freq = 0.04 / harmonic;
-        let env = max(sin(along_crest * env_freq + fi * 2.39), 0.0);
+    // 3 wave groups for natural wave sets via constructive/destructive interference
+    let group_wavelength_scales = array<f32, 3>(1.0, 0.73, 1.35);
+    let group_angle_offsets = array<f32, 3>(0.0, 0.15, -0.12);
+    let group_amp_scales = array<f32, 3>(1.0, 0.8, 0.6);
+    // Each group arrives in slow pulses — creates classic "wave set" pattern
+    let set_speeds = array<f32, 3>(0.18, 0.25, 0.14);
 
-        // Clean traveling wave
-        let phase = dot(dir, world_xz) * k - w * shore.time;
+    for (var g = 0; g < 3; g++) {
+        let base_wl = shore.gerstner_wavelength * group_wavelength_scales[g];
+        let base_amp_g = base_amplitude * group_amp_scales[g];
+        let group_angle = group_angle_offsets[g];
 
-        // Gerstner displacement: horizontal pulls toward crests, vertical is sine
-        let qi = Q / (k * amplitude * f32(num_waves) + 0.001);
-        disp.x += amplitude * env * qi * dir.x * cos(phase);
-        disp.y += amplitude * env * sin(phase);
-        disp.z += amplitude * env * qi * dir.y * cos(phase);
+        // Rotate toward_shore by group angle offset
+        let cos_ga = cos(group_angle);
+        let sin_ga = sin(group_angle);
+        let group_toward = vec2(
+            toward_shore.x * cos_ga - toward_shore.y * sin_ga,
+            toward_shore.x * sin_ga + toward_shore.y * cos_ga
+        );
 
-        // Foam at crests in shallow water
-        let steepness = amplitude * env * k;
-        let crest = saturate(sin(phase));
-        let break_threshold = mix(0.2, 0.8, depth_ratio);
-        foam += smoothstep(break_threshold, break_threshold + 0.1, steepness) * crest;
+        // Temporal wave set modulation — groups pulse at different rates
+        let set_mod = 0.3 + 0.7 * max(sin(shore.time * set_speeds[g]), 0.0);
+
+        for (var i = 0; i < num_waves; i++) {
+            let fi = f32(i);
+            let harmonic = fi + 1.0;
+            let wavelength = base_wl / harmonic;
+            let k = 2.0 * PI / wavelength;
+            let w = sqrt(GRAVITY * k) * shore.gerstner_speed;
+            // Separate base and shoaled amplitude so steepness grows with shoaling
+            let base_amp = base_amp_g / harmonic * amp_variation;
+            let amplitude = base_amp * envelope * set_mod;
+
+            // Per-harmonic angular spread
+            let perp = vec2(-group_toward.y, group_toward.x);
+            let spread_angle = (fi - f32(num_waves - 1) * 0.5) * 0.12;
+            let dir = normalize(group_toward * cos(spread_angle) + perp * sin(spread_angle));
+
+            // Along-crest envelope: noise breaks up regular wave segments
+            let along_crest = dot(perp, world_xz);
+            let env_freq = 0.1 / harmonic;
+            let crest_noise = (value_noise(world_xz * 0.04 + vec2(fi * 3.7, f32(g) * 2.1)) - 0.5) * 2.0;
+            let env = max(sin(along_crest * env_freq + fi * 2.39 + f32(g) * 1.7) + crest_noise, 0.0);
+
+            let phase = dot(dir, world_xz) * k - w * shore.time;
+            let sin_p = sin(phase);
+            let cos_p = cos(phase);
+
+            // qi uses base (un-shoaled) amplitude — steepness increases with shoaling
+            // Normalized per-group only so each wave train crests independently
+            let qi = Q / (k * base_amp * f32(num_waves) + 0.001);
+            disp.x += amplitude * env * qi * dir.x * cos_p;
+            disp.y += amplitude * env * sin_p;
+            disp.z += amplitude * env * qi * dir.y * cos_p;
+
+            // Accumulate Jacobian partial derivatives
+            let Ak = amplitude * env * qi * k;
+            dxx += Ak * dir.x * dir.x * sin_p;
+            dzz += Ak * dir.y * dir.y * sin_p;
+            dxz += Ak * dir.x * dir.y * sin_p;
+        }
     }
 
-    return vec4(disp, saturate(foam));
+    let J = (1.0 - dxx) * (1.0 - dzz) - dxz * dxz;
+
+    return vec4(disp, J);
 }
 
 fn shore_wave_normal(
@@ -254,279 +292,147 @@ fn shore_wave_normal(
     var dydx = 0.0;
     var dydz = 0.0;
     let num_waves = i32(shore.gerstner_num_waves);
-    let envelope = shoal_and_break(depth);
     let toward_shore = -sdf_grad;
 
+    // Noisy depth (must match displacement)
+    let depth_noise = (fbm3(world_xz * 0.05) - 0.5) * shore.shore_foam_distance;
+    let noisy_depth = max(depth + depth_noise, 0.1);
+    let envelope = shoal_and_break(noisy_depth);
+
     // Must match displacement
-    let amp_variation = value_noise(world_xz * 0.02) * 0.4 + 0.8;
+    let amp_variation = value_noise(world_xz * 0.01) * 0.8 + 0.2;
 
-    for (var i = 0; i < num_waves; i++) {
-        let fi = f32(i);
-        let harmonic = fi + 1.0;
-        let wavelength = shore.gerstner_wavelength / harmonic;
-        let k = 2.0 * PI / wavelength;
-        let w = sqrt(GRAVITY * k) * shore.gerstner_speed;
-        let amplitude = base_amplitude / harmonic * envelope * amp_variation;
+    // 3 wave groups (must match displacement)
+    let group_wavelength_scales = array<f32, 3>(1.0, 0.73, 1.35);
+    let group_angle_offsets = array<f32, 3>(0.0, 0.15, -0.12);
+    let group_amp_scales = array<f32, 3>(1.0, 0.8, 0.6);
+    let set_speeds = array<f32, 3>(0.18, 0.25, 0.14);
 
-        let perp = vec2(-toward_shore.y, toward_shore.x);
-        let spread_angle = (fi - f32(num_waves - 1) * 0.5) * 0.12;
-        let dir = normalize(toward_shore * cos(spread_angle) + perp * sin(spread_angle));
+    for (var g = 0; g < 3; g++) {
+        let base_wl = shore.gerstner_wavelength * group_wavelength_scales[g];
+        let base_amp_g = base_amplitude * group_amp_scales[g];
+        let group_angle = group_angle_offsets[g];
 
-        // Along-crest envelope (must match displacement)
-        let along_crest = dot(perp, world_xz);
-        let env_freq = 0.04 / harmonic;
-        let env = max(sin(along_crest * env_freq + fi * 2.39), 0.0);
+        let cos_ga = cos(group_angle);
+        let sin_ga = sin(group_angle);
+        let group_toward = vec2(
+            toward_shore.x * cos_ga - toward_shore.y * sin_ga,
+            toward_shore.x * sin_ga + toward_shore.y * cos_ga
+        );
 
-        // Clean traveling wave — must match displacement
-        let phase = dot(dir, world_xz) * k - w * shore.time;
-        let dy_dphase = amplitude * env * cos(phase) * k;
+        // Temporal wave set modulation (must match displacement)
+        let set_mod = 0.3 + 0.7 * max(sin(shore.time * set_speeds[g]), 0.0);
 
-        dydx += dy_dphase * dir.x;
-        dydz += dy_dphase * dir.y;
+        for (var i = 0; i < num_waves; i++) {
+            let fi = f32(i);
+            let harmonic = fi + 1.0;
+            let wavelength = base_wl / harmonic;
+            let k = 2.0 * PI / wavelength;
+            let w = sqrt(GRAVITY * k) * shore.gerstner_speed;
+            // Must match displacement: separate base and shoaled amplitude
+            let base_amp = base_amp_g / harmonic * amp_variation;
+            let amplitude = base_amp * envelope * set_mod;
+
+            let perp = vec2(-group_toward.y, group_toward.x);
+            let spread_angle = (fi - f32(num_waves - 1) * 0.5) * 0.12;
+            let dir = normalize(group_toward * cos(spread_angle) + perp * sin(spread_angle));
+
+            // Along-crest envelope (must match displacement)
+            let along_crest = dot(perp, world_xz);
+            let env_freq = 0.1 / harmonic;
+            let crest_noise = (value_noise(world_xz * 0.04 + vec2(fi * 3.7, f32(g) * 2.1)) - 0.5) * 2.0;
+            let env = max(sin(along_crest * env_freq + fi * 2.39 + f32(g) * 1.7) + crest_noise, 0.0);
+
+            // Clean traveling wave — must match displacement
+            let phase = dot(dir, world_xz) * k - w * shore.time;
+            let dy_dphase = amplitude * env * cos(phase) * k;
+
+            dydx += dy_dphase * dir.x;
+            dydz += dy_dphase * dir.y;
+        }
     }
 
     return normalize(vec3(-dydx, 1.0, -dydz));
 }
 
-// ---- Inner Shore Zone: Pulse-Driven Coastal Surf ----
-// The mask IS the wave. Radial pulse bands sweep inward from the outer
-// edge toward the coast. Each pulse is a wave crest that shoals (grows)
-// as it approaches shore, peaks, then breaks and collapses at the coast.
-// Sectors are scaled by island size so larger coastlines get more sectors.
-
-const INNER_ZONE_START: f32 = 256.0;
-const INNER_ZONE_FADE: f32 = 200.0;
-const INNER_BREAK_START: f32 = 160.0;  // waves begin breaking here
-const INNER_BREAK_END: f32 = 1.0;     // waves fully collapsed at shoreline
-const BREAK_SEGMENT_SIZE: f32 = 2.0; // along-coast size of pseudorandom break segments
-const PULSE_SPEED: f32 = 7.0;
-const PULSE_FREQ: f32 = 0.08;
-
-// Wave set mask debug: returns vec3(pulse, break_intensity, combined)
-fn wave_set_mask_debug(sdf_grad: vec2<f32>, world_xz: vec2<f32>, sdf_distance: f32, time: f32) -> vec3<f32> {
-    let pulse_speed = PULSE_SPEED;
-    let pulse_freq = PULSE_FREQ;
-    let pulse_phase = sdf_distance * pulse_freq + pulse_speed * pulse_freq * time;
-    let pulse_raw = sin(pulse_phase);
-    let pulse = smoothstep(0.92, 0.98, pulse_raw);
-
-    // Per-pulse break pattern (matches inner_shore_displacement)
-    let coast_point = world_xz - sdf_grad * sdf_distance;
-    let pulse_id = round(pulse_phase / (2.0 * PI));
-    let break_noise = fbm3(
-        coast_point / BREAK_SEGMENT_SIZE + vec2(pulse_id * 1.7, pulse_id * 0.3 + 0.5)
-    );
-    let break_intensity = smoothstep(0.3, 0.7, break_noise);
-
-    return vec3(pulse, break_intensity, pulse * break_intensity);
-}
-
-// Shoaling + breaking profile for inner surf waves.
-// Grows as wave approaches shore, peaks at INNER_BREAK_START,
-// then collapses to 0 by INNER_BREAK_END.
-fn inner_shoal_profile(sdf_distance: f32) -> f32 {
-    // Shoaling: rises quickly from outer edge, nearly full strength by mid-zone
-    let dist_norm = saturate(sdf_distance / INNER_ZONE_START);
-    let shoal = saturate(1.0 - dist_norm * dist_norm); // quadratic rise: fast growth inward
-    // Breaking: gradual collapse — sqrt curve holds height longer before final drop
-    let break_t = saturate((sdf_distance - INNER_BREAK_END) / (INNER_BREAK_START - INNER_BREAK_END));
-    let breaking = sqrt(break_t);
-    return shoal * breaking;
-}
-
-fn inner_shore_displacement(
+// Per-pixel Jacobian for pixel-perfect foam in fragment shader.
+// Re-evaluates all Gerstner waves but only computes Jacobian partials (no displacement).
+fn shore_gerstner_jacobian(
     sdf_grad: vec2<f32>,
+    base_amplitude: f32,
     world_xz: vec2<f32>,
-    sdf_distance: f32,
-) -> vec4<f32> {
-    let toward_shore = -sdf_grad;
-
-    // Outer edge blend
-    let inner_blend = smoothstep(INNER_ZONE_START, INNER_ZONE_FADE, sdf_distance);
-
-    // Shoaling + breaking envelope
-    let shoal = inner_shoal_profile(sdf_distance);
-
-    // Pulse phase: purely sdf_distance-driven so rings follow SDF iso-contours
-    let pulse_speed = PULSE_SPEED;
-    let pulse_freq = PULSE_FREQ;
-    let dist_wobble = (value_noise(world_xz * 0.08 + vec2(0.0, shore.time * 0.15)) - 0.5) * 5.0;
-    let phase = (sdf_distance + dist_wobble) * pulse_freq + pulse_speed * pulse_freq * shore.time;
-
-    // Per-pulse pseudorandom break pattern:
-    // coast_point = nearest shore point (varies around the coastline)
-    // pulse_id = which ring we're on (changes at troughs, stable across crests)
-    // break_intensity = 0 (gap) to 1 (fully breaking)
-    let coast_point = world_xz - sdf_grad * sdf_distance;
-    let pulse_id = round(phase / (2.0 * PI));
-    let break_noise = fbm3(
-        coast_point / BREAK_SEGMENT_SIZE + vec2(pulse_id * 1.7, pulse_id * 0.3 + 0.5)
-    );
-    let break_intensity = smoothstep(0.3, 0.7, break_noise);
-
-    // Pulse envelope: narrows near shore — wide bands far out, very thin at coast
-    let wave_raw = sin(phase);
-    let shore_t = 1.0 - saturate(sdf_distance / INNER_ZONE_START); // 0 at edge, 1 at shore
-    let env_lo = mix(0.93, 0.97, shore_t);
-    let env_hi = mix(0.97, 0.999, shore_t);
-    let pulse_envelope = smoothstep(env_lo, env_hi, wave_raw);
-
-    // Noise to break up displacement edges — organic, non-uniform wave shapes
-    let disp_noise = value_noise(world_xz * 0.1 + vec2(shore.time * 0.2, 0.0)) * 0.4
-                   + value_noise(world_xz * 0.3 + vec2(0.0, shore.time * 0.25)) * 0.35
-                   + value_noise(world_xz * 0.8 + shore.time * 0.15) * 0.25;
-
-    let base_amp = 7.0;
-    let wave_envelope = base_amp * inner_blend * shoal * pulse_envelope * disp_noise;
-
-    // Break modulates height: non-breaking sections fade to near-zero,
-    // creating visible gaps that split waves apart
-    let height_mod = break_intensity;
-    let envelope = wave_envelope * height_mod;
-
-    // Sum of sines: harmonics create sharper crests and flatter troughs
-    var height = 0.0;
-    var horiz = 0.0;
-    let Q = 0.4;
-    // Fundamental
-    height += sin(phase) * 1.0;
-    horiz += cos(phase) * 1.0;
-    // 2nd harmonic: sharpens crests
-    height += sin(phase * 2.0 + 0.3) * 0.4;
-    horiz += cos(phase * 2.0 + 0.3) * 0.4 * 2.0;
-    // 3rd harmonic: fine detail
-    height += sin(phase * 3.0 + 1.1) * 0.15;
-    horiz += cos(phase * 3.0 + 1.1) * 0.15 * 3.0;
-    // 4th harmonic: subtle sharpening
-    height += sin(phase * 4.0 + 2.7) * 0.06;
-    horiz += cos(phase * 4.0 + 2.7) * 0.06 * 4.0;
-    // 5th harmonic: fine ripple detail
-    height += sin(phase * 5.0 + 4.1) * 0.03;
-    horiz += cos(phase * 5.0 + 4.1) * 0.03 * 5.0;
-    // 6th harmonic: micro detail
-    height += sin(phase * 6.0 + 5.3) * 0.015;
-    horiz += cos(phase * 6.0 + 5.3) * 0.015 * 6.0;
-
-    // Normalize by sum of weights (1.0 + 0.4 + 0.15 + 0.06 + 0.03 + 0.015 = 1.655)
-    height = height / 1.655;
-    horiz = horiz / 1.655;
-
-    var disp = vec3(0.0);
-    disp.x = envelope * Q * toward_shore.x * horiz;
-    disp.y = envelope * height;
-    disp.z = envelope * Q * toward_shore.y * horiz;
-
-    return vec4(disp, 0.0);
-}
-
-// Per-pixel foam for inner shore zone. Runs in the fragment shader for
-// pixel-perfect resolution instead of blocky vertex interpolation.
-fn inner_shore_foam(
-    sdf_grad: vec2<f32>,
-    world_xz: vec2<f32>,
-    sdf_distance: f32,
+    depth: f32,
 ) -> f32 {
-    // Reconstruct pulse phase (must match inner_shore_displacement)
-    let pulse_speed = PULSE_SPEED;
-    let pulse_freq = PULSE_FREQ;
-    let dist_wobble = (value_noise(world_xz * 0.08 + vec2(0.0, shore.time * 0.15)) - 0.5) * 5.0;
-    let phase = (sdf_distance + dist_wobble) * pulse_freq + pulse_speed * pulse_freq * shore.time;
-
-    // Break pattern (must match displacement)
-    let coast_point = world_xz - sdf_grad * sdf_distance;
-    let pulse_id = round(phase / (2.0 * PI));
-    let break_noise = fbm3(
-        coast_point / BREAK_SEGMENT_SIZE + vec2(pulse_id * 1.7, pulse_id * 0.3 + 0.5)
-    );
-    let break_intensity = smoothstep(0.3, 0.7, break_noise);
-
-    // Multi-scale noise for organic foam texture
-    let foam_noise = value_noise(world_xz * 0.15 + shore.time * 0.3)  * 0.5
-                   + value_noise(world_xz * 0.4 + shore.time * 0.5)   * 0.3
-                   + value_noise(world_xz * 1.2 + shore.time * 0.8)   * 0.2;
-
-    // --- 1. Foam trail behind each pulse ---
-    // Add per-pixel noise to the foam phase so the crest edge is ragged, not a clean line.
-    // This is independent of the displacement phase — foam can undulate without moving vertices.
-    let foam_phase_jitter = (fbm3(world_xz * 0.3 + shore.time * 0.08) - 0.5) * 0.4;
-    let foam_phase = phase + foam_phase_jitter;
-    let phase_fract = fract(foam_phase / (2.0 * PI));
-    let crest_pos = 0.25;
-    let trail_dist = fract(phase_fract - crest_pos);
-    // Noisy trail falloff: jitter the decay rate so the trailing edge is also irregular
-    let trail_jitter = fbm3(world_xz * 0.8 + shore.time * 0.12) * 0.4 + 0.8; // [0.8, 1.2]
-    let trail_envelope = saturate(1.0 - trail_dist * (6.0 * trail_jitter));
-    let trail_foam = trail_envelope * break_intensity * foam_noise;
-
-    // --- 2. Noisy wash foam edge ---
-    let edge_noise = fbm3(world_xz * 0.12 + shore.time * 0.2) * 15.0;
-    let wash_zone = smoothstep(INNER_BREAK_START, INNER_BREAK_END, sdf_distance + edge_noise);
-    let wash_foam = trail_envelope * break_intensity * wash_zone * (0.5 + foam_noise * 0.5);
-
-    // --- 3. Accumulated shore foam ---
-    let accum_zone = smoothstep(12.0, 1.0, sdf_distance);
-    let accum_noise = fbm3(world_xz * 0.3 + vec2(shore.time * 0.15, shore.time * -0.1));
-    let accum_foam = accum_zone * accum_noise * 0.6;
-
-    return saturate(
-        wash_foam
-        + trail_foam * wash_zone * 0.7
-        + accum_foam
-    );
-}
-
-fn inner_shore_normal(
-    sdf_grad: vec2<f32>,
-    world_xz: vec2<f32>,
-    sdf_distance: f32,
-) -> vec3<f32> {
     let toward_shore = -sdf_grad;
+    let Q = shore.gerstner_steepness;
+    let num_waves = i32(shore.gerstner_num_waves);
 
-    let inner_blend = smoothstep(INNER_ZONE_START, INNER_ZONE_FADE, sdf_distance);
-    let shoal = inner_shoal_profile(sdf_distance);
+    // Noisy depth (must match displacement)
+    let depth_noise = (fbm3(world_xz * 0.05) - 0.5) * shore.shore_foam_distance;
+    let noisy_depth = max(depth + depth_noise, 0.1);
+    let envelope = shoal_and_break(noisy_depth);
 
-    let pulse_speed = PULSE_SPEED;
-    let pulse_freq = PULSE_FREQ;
-    let dist_wobble = (value_noise(world_xz * 0.08 + vec2(0.0, shore.time * 0.15)) - 0.5) * 5.0;
-    let phase = (sdf_distance + dist_wobble) * pulse_freq + pulse_speed * pulse_freq * shore.time;
+    let amp_variation = value_noise(world_xz * 0.01) * 0.8 + 0.2;
 
-    // Per-pulse break pattern (must match displacement)
-    let coast_point = world_xz - sdf_grad * sdf_distance;
-    let pulse_id = round(phase / (2.0 * PI));
-    let break_noise = fbm3(
-        coast_point / BREAK_SEGMENT_SIZE + vec2(pulse_id * 1.7, pulse_id * 0.3 + 0.5)
-    );
-    let break_intensity = smoothstep(0.3, 0.7, break_noise);
-    let height_mod = break_intensity;
+    var dxx = 0.0;
+    var dzz = 0.0;
+    var dxz = 0.0;
 
-    let wave_raw = sin(phase);
-    let shore_t = 1.0 - saturate(sdf_distance / INNER_ZONE_START);
-    let env_lo = mix(0.93, 0.97, shore_t);
-    let env_hi = mix(0.97, 0.999, shore_t);
-    let pulse_envelope = smoothstep(env_lo, env_hi, wave_raw);
+    // 3 wave groups (must match displacement)
+    let group_wavelength_scales = array<f32, 3>(1.0, 0.73, 1.35);
+    let group_angle_offsets = array<f32, 3>(0.0, 0.15, -0.12);
+    let group_amp_scales = array<f32, 3>(1.0, 0.8, 0.6);
+    let set_speeds = array<f32, 3>(0.18, 0.25, 0.14);
 
-    // Must match displacement noise
-    let disp_noise = value_noise(world_xz * 0.1 + vec2(shore.time * 0.2, 0.0)) * 0.4
-                   + value_noise(world_xz * 0.3 + vec2(0.0, shore.time * 0.25)) * 0.35
-                   + value_noise(world_xz * 0.8 + shore.time * 0.15) * 0.25;
+    for (var g = 0; g < 3; g++) {
+        let base_wl = shore.gerstner_wavelength * group_wavelength_scales[g];
+        let base_amp_g = base_amplitude * group_amp_scales[g];
+        let group_angle = group_angle_offsets[g];
 
-    let base_amp = 7.0;
-    let envelope = base_amp * inner_blend * shoal * pulse_envelope * disp_noise * height_mod;
+        let cos_ga = cos(group_angle);
+        let sin_ga = sin(group_angle);
+        let group_toward = vec2(
+            toward_shore.x * cos_ga - toward_shore.y * sin_ga,
+            toward_shore.x * sin_ga + toward_shore.y * cos_ga
+        );
 
-    // Sum of sines derivative (must match displacement harmonics)
-    var dh = 0.0;
-    dh += cos(phase) * 1.0 * pulse_freq;
-    dh += cos(phase * 2.0 + 0.3) * 0.4 * 2.0 * pulse_freq;
-    dh += cos(phase * 3.0 + 1.1) * 0.15 * 3.0 * pulse_freq;
-    dh += cos(phase * 4.0 + 2.7) * 0.06 * 4.0 * pulse_freq;
-    dh += cos(phase * 5.0 + 4.1) * 0.03 * 5.0 * pulse_freq;
-    dh += cos(phase * 6.0 + 5.3) * 0.015 * 6.0 * pulse_freq;
-    dh = dh / 1.655;
+        // Temporal wave set modulation (must match displacement)
+        let set_mod = 0.3 + 0.7 * max(sin(shore.time * set_speeds[g]), 0.0);
 
-    let slope = envelope * dh;
+        for (var i = 0; i < num_waves; i++) {
+            let fi = f32(i);
+            let harmonic = fi + 1.0;
+            let wavelength = base_wl / harmonic;
+            let k = 2.0 * PI / wavelength;
+            let w = sqrt(GRAVITY * k) * shore.gerstner_speed;
+            // Must match displacement: separate base and shoaled amplitude
+            let base_amp = base_amp_g / harmonic * amp_variation;
+            let amplitude = base_amp * envelope * set_mod;
 
-    return normalize(vec3(-slope * toward_shore.x, 1.0, -slope * toward_shore.y));
+            let perp = vec2(-group_toward.y, group_toward.x);
+            let spread_angle = (fi - f32(num_waves - 1) * 0.5) * 0.12;
+            let dir = normalize(group_toward * cos(spread_angle) + perp * sin(spread_angle));
+
+            let along_crest = dot(perp, world_xz);
+            let env_freq = 0.1 / harmonic;
+            let crest_noise = (value_noise(world_xz * 0.04 + vec2(fi * 3.7, f32(g) * 2.1)) - 0.5) * 2.0;
+            let env = max(sin(along_crest * env_freq + fi * 2.39 + f32(g) * 1.7) + crest_noise, 0.0);
+
+            let phase = dot(dir, world_xz) * k - w * shore.time;
+            let sin_p = sin(phase);
+
+            // Must match displacement qi
+            let qi = Q / (k * base_amp * f32(num_waves) + 0.001);
+            let Ak = amplitude * env * qi * k;
+            dxx += Ak * dir.x * dir.x * sin_p;
+            dzz += Ak * dir.y * dir.y * sin_p;
+            dxz += Ak * dir.x * dir.y * sin_p;
+        }
+    }
+
+    return (1.0 - dxx) * (1.0 - dzz) - dxz * dxz;
 }
+
 
 struct OceanVertexOutput {
     @builtin(position) position: vec4<f32>,
@@ -536,7 +442,7 @@ struct OceanVertexOutput {
     @location(3) jacobian: f32,
     @location(4) shore_blend: f32,        // 0 = pure FFT, 1 = pure Gerstner
     @location(5) sdf_distance: f32,       // World-space SDF distance for fragment foam
-    @location(6) shore_wave_height: f32,  // Breaking foam from wave steepness (0..1)
+    @location(6) shore_jacobian: f32,     // Jacobian from Gerstner waves
 }
 
 @vertex
@@ -607,18 +513,16 @@ fn vertex(in: Vertex) -> OceanVertexOutput {
 
             let shore_result = shore_wave_displacement(grad, shore.gerstner_amplitude, original_xz, depth);
             let shore_disp = shore_result.xyz;
-            shore_wave_h = shore_result.w; // Now carries breaking foam, not raw height
-            // FFT fades completely as shore_blend approaches 1.0
-            let fft_atten = 1.0 - shore_blend;
-            blended_displacement = total_displacement * fft_atten + shore_disp * shore_blend;
-        }
-
-        // Inner shore zone: additive pseudorandom coastal waves within 256m
-        // (foam is computed per-pixel in the fragment shader via inner_shore_foam)
-        if (sdf_world_dist < INNER_ZONE_START) {
-            let grad = analytical_sdf_gradient(original_xz);
-            let inner_result = inner_shore_displacement(grad, original_xz, sdf_world_dist);
-            blended_displacement = blended_displacement + inner_result.xyz;
+            shore_wave_h = shore_result.w; // Jacobian from Gerstner waves
+            // FFT vertical stays for surface texture; horizontal goes to 0
+            // to prevent FFT choppiness fighting shore-ward Gerstner motion
+            let fft_v_atten = mix(1.0, shore.shore_foam_band_freq, shore_blend);
+            let fft_atten_disp = vec3(
+                total_displacement.x * (1.0 - shore_blend),
+                total_displacement.y * fft_v_atten,
+                total_displacement.z * (1.0 - shore_blend)
+            );
+            blended_displacement = fft_atten_disp + shore_disp * shore_blend;
         }
     }
 
@@ -635,7 +539,7 @@ fn vertex(in: Vertex) -> OceanVertexOutput {
     out.jacobian = jacobian;
     out.shore_blend = shore_blend;
     out.sdf_distance = sdf_world_dist;
-    out.shore_wave_height = shore_wave_h;
+    out.shore_jacobian = shore_wave_h;
 
     return out;
 }
@@ -645,8 +549,6 @@ const DEBUG_JACOBIAN: bool = false;
 const DEBUG_FOAM_TEXTURE: bool = false;
 const DEBUG_DISPLACEMENT: bool = false;  // Visualize raw displacement values per cascade
 const DEBUG_SDF: bool = false;           // Visualize SDF values and blend zones
-const DEBUG_WAVE_SET_MASK: bool = false; // Visualize inner shore wave set mask
-
 // PBR helper functions
 fn distribution_ggx(n: vec3<f32>, h: vec3<f32>, roughness: f32) -> f32 {
     let a = roughness * roughness;
@@ -727,9 +629,8 @@ fn fragment(mesh: OceanVertexOutput) -> @location(0) vec4<f32> {
       let deriv_lod_level = clamp(log2(normalized_distance), 0.0, t_derivs_miplevels);
       let deriv = textureSampleLevel(t_derivatives, s_ocean, uv, layer, deriv_lod_level);
 
-      // FFT derivatives fully fade to 0 in shore zone — shore sine waves
-      // own the surface entirely within blend_end
-      let fft_deriv_weight = 1.0 - mesh.shore_blend;
+      // FFT derivatives attenuate in shore zone but retain a minimum contribution
+      let fft_deriv_weight = mix(1.0, shore.shore_foam_band_freq, mesh.shore_blend);
       blended_deriv = blended_deriv + deriv * lod_c * fft_deriv_weight;
 
       // Combine persistent foam from cascades (lod_cutoff of 0 means always include)
@@ -784,15 +685,6 @@ fn fragment(mesh: OceanVertexOutput) -> @location(0) vec4<f32> {
         let perturbed = normalize(s_normal + vec3(px, 0.0, pz));
 
         normal = normalize(mix(normal, perturbed, mesh.shore_blend));
-    }
-
-    // Inner shore zone normals: blend additively when within 256m
-    if (mesh.sdf_distance > 0.0 && mesh.sdf_distance < INNER_ZONE_START) {
-        let grad = analytical_sdf_gradient(mesh.original_xz);
-        let inner_n = inner_shore_normal(grad, mesh.original_xz, mesh.sdf_distance);
-        let inner_blend = smoothstep(INNER_ZONE_START, INNER_ZONE_FADE, mesh.sdf_distance);
-        // Blend inner wave normals into existing normal
-        normal = normalize(mix(normal, inner_n, inner_blend * 0.5));
     }
 
     // Light direction (sun position in sky)
@@ -858,37 +750,42 @@ fn fragment(mesh: OceanVertexOutput) -> @location(0) vec4<f32> {
     // Fade out when sun is below horizon
     ocean_color = ocean_color + params.sun_color * specular * params.light_intensity * ndotl * sun_height;
 
-    // Shore foam: outer shore (Gerstner) foam from vertex, plus per-pixel inner shore foam
-    if (mesh.sdf_distance > 0.0 && (mesh.shore_blend > 0.001 || mesh.sdf_distance < INNER_ZONE_START)) {
-        let foam_uv = mesh.original_xz * params.foam_tile_scale * 0.03;
-        let detail = textureSample(t_foam, s_ocean, foam_uv).r * 0.2 + 0.8;
-        let foam_blend = max(mesh.shore_blend, smoothstep(INNER_ZONE_START, INNER_ZONE_FADE, mesh.sdf_distance));
-
-        // Outer shore Gerstner foam (still from vertex — coarser but less visible)
-        let outer_foam = mesh.shore_wave_height;
-        base_turbulence = base_turbulence + outer_foam * detail * foam_blend * shore.shore_foam_intensity;
-
-        // Inner shore foam: computed per-pixel for crisp resolution
-        if (mesh.sdf_distance < INNER_ZONE_START) {
-            let frag_grad = analytical_sdf_gradient(mesh.original_xz);
-            let pixel_foam = inner_shore_foam(frag_grad, mesh.original_xz, mesh.sdf_distance);
-            base_turbulence = base_turbulence + pixel_foam * detail * shore.shore_foam_intensity;
-        }
-
-        // Surf-zone foam: persistent foam right at the waterline
-        let surf_width = 3.0;
-        let surf_foam = (1.0 - smoothstep(0.0, surf_width, mesh.sdf_distance)) * 0.8;
-        let surf_detail = textureSample(t_foam, s_ocean, foam_uv * 3.0).r * 0.3 + 0.7;
-        base_turbulence = base_turbulence + surf_foam * surf_detail;
-    }
-
     // Use noise to modulate turbulence - creates organic foam breakup
     // The noise acts as a threshold mask for where foam appears
-    // Same pipeline for both FFT and shore-driven foam
     let foam_mask = saturate((base_turbulence - (1.0 - foam_noise) * 0.5) * 2.0);
 
-    // Add foam as highlights (uses foam color from params)
+    // Add FFT foam as highlights (uses foam color from params)
     ocean_color = ocean_color + params.foam_color * foam_mask * 0.8;
+
+    // Shore foam: Jacobian-based breaking detection per pixel
+    // Applied directly to ocean_color — bypasses FFT noise mask which would suppress it
+    if (mesh.shore_blend > 0.001) {
+        let grad = analytical_sdf_gradient(mesh.original_xz);
+        let frag_depth = sdf_to_depth(analytical_sdf(mesh.original_xz));
+        let J = shore_gerstner_jacobian(grad, shore.gerstner_amplitude, mesh.original_xz, frag_depth);
+
+        // Foam where wave is steepening toward breaking (J < ~0.3)
+        // J=1 is flat, J=0 is about to fold, J<0 is folded over
+        let foam_threshold = 0.3;
+        let break_intensity = saturate((foam_threshold - J) * params.foam_multiplier);
+
+        // Multi-scale foam texture for organic breakup
+        let foam_uv = mesh.original_xz * params.foam_tile_scale * 0.03;
+        let foam_fine = textureSample(t_foam, s_ocean, foam_uv * 3.0).r;
+        let foam_med = textureSample(t_foam, s_ocean, foam_uv).r;
+        let foam_broad = textureSample(t_foam, s_ocean, foam_uv * 0.3).r;
+
+        // Procedural noise for variation independent of texture tiling
+        let foam_proc = fbm3(mesh.original_xz * 0.08 + shore.time * 0.05);
+
+        // Combined: broad patches modulate medium detail with fine breakup
+        let foam_pattern = foam_broad * (foam_med * 0.7 + foam_fine * 0.3) * (0.5 + foam_proc * 0.5);
+
+        // Foam in organic patches — stronger breaking pushes more through the noise threshold
+        let shore_foam = break_intensity * smoothstep(0.1, 0.35, foam_pattern + break_intensity * 0.4);
+
+        ocean_color = ocean_color + params.foam_color * shore_foam * shore.shore_foam_intensity;
+    }
 
     // Add ambient light
     ocean_color = ocean_color + params.ambient_color;
@@ -941,27 +838,6 @@ fn fragment(mesh: OceanVertexOutput) -> @location(0) vec4<f32> {
           debug_color.g = saturate(sdf_val * 2.0);  // Water distance
       }
       debug_color.b = mesh.shore_blend; // Blend zone visualization
-      return vec4(debug_color, 1.0);
-    }
-
-    // Debug mode: visualize wave set mask with break pattern
-    // Red = pulse rings (without breaks), Blue = break_intensity, Green = combined result
-    // Gaps appear where green is dark but red is bright (break_intensity killed it)
-    if (DEBUG_WAVE_SET_MASK) {
-      let dbg_grad = analytical_sdf_gradient(mesh.original_xz);
-      let dbg = wave_set_mask_debug(dbg_grad, mesh.original_xz, mesh.sdf_distance, shore.time);
-      let pulse = dbg.x;
-      let brk = dbg.y;
-      let combined = dbg.z;
-      var debug_color = vec3(0.0);
-      if (mesh.sdf_distance > 0.0 && mesh.sdf_distance < INNER_ZONE_START) {
-          // Red = pulse (where rings are), Blue = break intensity, Green = final combined
-          debug_color = vec3(pulse * 0.4, combined, brk * 0.3);
-      } else if (mesh.sdf_distance <= 0.0) {
-          debug_color = vec3(0.4, 0.2, 0.1); // land
-      } else {
-          debug_color = vec3(0.0, 0.0, 0.15); // beyond inner zone
-      }
       return vec4(debug_color, 1.0);
     }
 

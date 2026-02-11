@@ -49,11 +49,11 @@ pub struct ShoreParams {
     pub gerstner_num_waves: f32,
     /// Phase speed multiplier for shore waves
     pub gerstner_speed: f32,
-    /// Distance from shore for shore foam effect
+    /// Amplitude of seabed depth noise (simulates uneven bottom for varied breaking)
     pub shore_foam_distance: f32,
     /// Intensity of shore foam
     pub shore_foam_intensity: f32,
-    /// Frequency of animated foam bands near shore
+    /// Minimum FFT contribution in surf zone (0.0-1.0, keeps FFT visible near shore)
     pub shore_foam_band_freq: f32,
     /// Dominant swell/wave approach direction (normalized XZ vector).
     /// Waves refract from this direction toward the shore-approaching direction
@@ -78,9 +78,9 @@ impl Default for ShoreParams {
             gerstner_steepness: 0.6,
             gerstner_num_waves: 3.0,
             gerstner_speed: 1.2,
-            shore_foam_distance: 10.0,
+            shore_foam_distance: 15.0,
             shore_foam_intensity: 0.8,
-            shore_foam_band_freq: 0.3,
+            shore_foam_band_freq: 0.15,
             // Default swell from +Z direction (toward -Z)
             swell_direction: Vec2::new(0.0, -1.0),
             time: 0.0,
