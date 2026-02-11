@@ -106,23 +106,44 @@ const PI: f32 = 3.14159265;
 const GRAVITY: f32 = 9.81;
 
 // ---- Analytical SDF Functions ----
-// Computes a circular island SDF analytically from world position.
-// Returns world-space signed distance: positive = water, negative = land.
+// Complex island: union of overlapping ellipses. Must match Rust generate_island_sdf.
+// Works in UV space (0..1) internally, converts world pos via sdf_origin/extent.
+
+fn ellipse_sdf(uv: vec2<f32>, center: vec2<f32>, radii: vec2<f32>) -> f32 {
+    return length((uv - center) / radii) - 1.0;
+}
+
+fn complex_island_sdf_uv(uv: vec2<f32>, center: vec2<f32>) -> f32 {
+    let main_d = ellipse_sdf(uv, center, vec2(0.28, 0.22));
+    let pen_d = ellipse_sdf(uv, center + vec2(0.12, 0.15), vec2(0.10, 0.16));
+    let south_d = ellipse_sdf(uv, center + vec2(-0.08, -0.13), vec2(0.14, 0.10));
+    let west_d = ellipse_sdf(uv, center + vec2(-0.18, 0.04), vec2(0.08, 0.12));
+    return min(min(main_d, pen_d), min(south_d, west_d)) * 0.25;
+}
+
+fn world_to_sdf_uv(world_xz: vec2<f32>) -> vec2<f32> {
+    return (world_xz - shore.sdf_origin) / shore.sdf_extent;
+}
 
 fn analytical_sdf(world_xz: vec2<f32>) -> f32 {
-    let center = shore.sdf_origin + shore.sdf_extent * 0.5;
-    let radius = 0.5 * max(shore.sdf_extent.x, shore.sdf_extent.y);
-    return length(world_xz - center) - radius;
+    let uv = world_to_sdf_uv(world_xz);
+    let uv_dist = complex_island_sdf_uv(uv, vec2(0.5, 0.5));
+    // Scale from UV space to world space
+    let world_scale = max(shore.sdf_extent.x, shore.sdf_extent.y);
+    return uv_dist * world_scale;
 }
 
 fn analytical_sdf_gradient(world_xz: vec2<f32>) -> vec2<f32> {
-    let center = shore.sdf_origin + shore.sdf_extent * 0.5;
-    let dir = world_xz - center;
-    let len = length(dir);
+    // Central differences in world space
+    let eps = 1.0;
+    let dx = analytical_sdf(world_xz + vec2(eps, 0.0)) - analytical_sdf(world_xz - vec2(eps, 0.0));
+    let dy = analytical_sdf(world_xz + vec2(0.0, eps)) - analytical_sdf(world_xz - vec2(0.0, eps));
+    let g = vec2(dx, dy);
+    let len = length(g);
     if (len < 0.0001) {
         return vec2(0.0, 1.0);
     }
-    return dir / len;
+    return g / len;
 }
 
 fn sdf_to_depth(sdf_dist: f32) -> f32 {
@@ -388,7 +409,7 @@ fn inner_shore_displacement(
     disp.z = envelope * Q * toward_shore.y * horiz;
 
     // Foam placement driven by wave height — foam sits on crests
-    let crest_foam = saturate(height * 2.5);  // foam triggers at lower displacement
+    let crest_foam = saturate((height - 0.15) * 2.0);  // foam on moderate+ crests
     // Foam fades with distance: strongest near breaking zone, lighter but present far out
     let break_proximity = 1.0 - smoothstep(INNER_BREAK_END, INNER_BREAK_START, sdf_distance);
     let dist_fade = 1.0 - saturate(sdf_distance / INNER_ZONE_START) * 0.5; // 1 at shore, 0.5 at edge

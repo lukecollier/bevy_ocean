@@ -95,16 +95,35 @@ pub struct SdfImage {
     pub handle: Handle<Image>,
 }
 
-/// Generates a 512x512 R32Float SDF texture for a circular island.
+/// SDF for a complex island shape: union of overlapping ellipses with bumpy coastline.
+/// Returns signed distance at a UV point (0..1 range). Positive = water, negative = land.
+fn complex_island_sdf_at(uv: Vec2, center: Vec2) -> f32 {
+    // Main body: slightly elongated
+    let main_d = ((uv - center) / Vec2::new(0.28, 0.22)).length() - 1.0;
+    // Peninsula poking north-east
+    let pen_center = center + Vec2::new(0.12, 0.15);
+    let pen_d = ((uv - pen_center) / Vec2::new(0.10, 0.16)).length() - 1.0;
+    // Southern lobe
+    let south_center = center + Vec2::new(-0.08, -0.13);
+    let south_d = ((uv - south_center) / Vec2::new(0.14, 0.10)).length() - 1.0;
+    // Western bump
+    let west_center = center + Vec2::new(-0.18, 0.04);
+    let west_d = ((uv - west_center) / Vec2::new(0.08, 0.12)).length() - 1.0;
+    // Smooth union of all blobs (min = union for SDF)
+    let union_d = main_d.min(pen_d).min(south_d).min(west_d);
+    // Scale back to UV-space distance (approximate)
+    union_d * 0.25
+}
+
+/// Generates a 512x512 R32Float SDF texture for a complex island.
 /// Positive values = water, negative = land, zero = shoreline.
-pub fn generate_island_sdf(size: u32, center: Vec2, radius: f32) -> Image {
+pub fn generate_island_sdf(size: u32, center: Vec2, _radius: f32) -> Image {
     let mut data = vec![0u8; (size * size * 4) as usize]; // R32Float = 4 bytes per pixel
 
     for y in 0..size {
         for x in 0..size {
             let uv = Vec2::new(x as f32 / size as f32, y as f32 / size as f32);
-            let dist_to_center = uv.distance(center);
-            let sdf_value = dist_to_center - radius; // positive outside circle, negative inside
+            let sdf_value = complex_island_sdf_at(uv, center);
 
             let bytes = sdf_value.to_le_bytes();
             let idx = ((y * size + x) * 4) as usize;
