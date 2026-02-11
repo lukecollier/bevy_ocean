@@ -261,10 +261,11 @@ fn shore_wave_normal(
     return normalize(vec3(-dydx, 1.0, -dydz));
 }
 
-// ---- Inner Shore Zone: Pseudorandom Coastal Waves ----
-// Shorter, varied waves active within ~256m of coastline.
-// These supplement the main shore waves with coastal surf character.
-// No breaking envelope — waves persist all the way to sdf_distance=0.
+// ---- Inner Shore Zone: Contour-Following Coastal Wave Sets ----
+// Wave fronts follow the SDF contour ())) shape around the coast).
+// Each wave set spawns at the outer edge and rolls inward over time.
+// The shore angle offsets timing so different stretches of coast
+// receive sets at different times, creating natural spacing.
 
 const INNER_ZONE_START: f32 = 256.0;
 const INNER_ZONE_FADE: f32 = 200.0;
@@ -278,41 +279,42 @@ fn inner_shore_displacement(
     var disp = vec3(0.0);
     var foam = 0.0;
     let toward_shore = -sdf_grad;
-    let perp = vec2(-toward_shore.y, toward_shore.x);
 
     // Blend factor: 1 inside 200m, fades to 0 at 256m
     let inner_blend = smoothstep(INNER_ZONE_START, INNER_ZONE_FADE, sdf_distance);
 
     // Distance-based amplitude: largest at zone start, shrinks toward shore
-    let dist_ratio = saturate(sdf_distance / INNER_ZONE_START); // 0 at shore, 1 at 256m
-    let dist_amp = mix(0.03, 1.0, dist_ratio); // small at shore, full at edge
+    let dist_ratio = saturate(sdf_distance / INNER_ZONE_START);
+    let dist_amp = mix(0.03, 1.0, dist_ratio);
+
+    // Shore angle: determines when this stretch of coast receives a wave set
+    let shore_angle = atan2(sdf_grad.y, sdf_grad.x);
 
     for (var i = 0; i < INNER_NUM_WAVES; i++) {
         let fi = f32(i);
 
         // Wavelength cycles over time — each wave has its own slow period
-        let cycle_period = 20.0 + fi * 7.0; // 20-48s per wave
-        let cycle = sin(shore.time / cycle_period + fi * 2.1) * 0.5 + 0.5; // 0..1
-        let wavelength = mix(12.0, 30.0, cycle); // oscillates between 12-30 units
+        let cycle_period = 20.0 + fi * 7.0;
+        let cycle = sin(shore.time / cycle_period + fi * 2.1) * 0.5 + 0.5;
+        let wavelength = mix(12.0, 30.0, cycle);
         let base_amp = 0.15 + fi * 0.02;
         let amplitude = base_amp * inner_blend * dist_amp;
         let k = 2.0 * PI / wavelength;
         let w = sqrt(GRAVITY * k) * shore.gerstner_speed;
 
-        // Pseudorandom direction perturbation: ±30° from toward-shore
-        let noise_val = value_noise(world_xz * 0.01 + vec2(fi * 17.3, fi * 31.7));
-        let angle_offset = (noise_val - 0.5) * 1.05; // ~±30° in radians
-        let dir = normalize(toward_shore * cos(angle_offset) + perp * sin(angle_offset));
+        // Phase driven by SDF distance — crests follow shoreline contour
+        // Noise-based angle offset: each wave gets a distinct, non-uniform phase
+        // per stretch of coast so fronts are staggered/intermittent around the island
+        let angle_norm = shore_angle / PI; // -1..1
+        let angle_offset = hash2d(vec2(angle_norm * 4.0 + fi * 5.3, fi * 13.7)) * 2.0 * PI;
+        let phase = sdf_distance * k - w * shore.time + angle_offset;
 
-        // Traveling wave phase
-        let phase = dot(dir, world_xz) * k - w * shore.time + fi * 1.73;
-
-        // Gerstner displacement (low steepness for gentle coastal waves)
+        // Gerstner displacement: moves toward shore along SDF gradient
         let Q = 0.3;
         let qi = Q / (k * amplitude * f32(INNER_NUM_WAVES) + 0.001);
-        disp.x += amplitude * qi * dir.x * cos(phase);
+        disp.x += amplitude * qi * toward_shore.x * cos(phase);
         disp.y += amplitude * sin(phase);
-        disp.z += amplitude * qi * dir.y * cos(phase);
+        disp.z += amplitude * qi * toward_shore.y * cos(phase);
 
         // Foam on crests — carried all the way to shore
         let crest = saturate(sin(phase));
@@ -330,12 +332,13 @@ fn inner_shore_normal(
     var dydx = 0.0;
     var dydz = 0.0;
     let toward_shore = -sdf_grad;
-    let perp = vec2(-toward_shore.y, toward_shore.x);
 
     let inner_blend = smoothstep(INNER_ZONE_START, INNER_ZONE_FADE, sdf_distance);
 
     let dist_ratio = saturate(sdf_distance / INNER_ZONE_START);
     let dist_amp = mix(0.03, 1.0, dist_ratio);
+
+    let shore_angle = atan2(sdf_grad.y, sdf_grad.x);
 
     for (var i = 0; i < INNER_NUM_WAVES; i++) {
         let fi = f32(i);
@@ -349,15 +352,14 @@ fn inner_shore_normal(
         let k = 2.0 * PI / wavelength;
         let w = sqrt(GRAVITY * k) * shore.gerstner_speed;
 
-        let noise_val = value_noise(world_xz * 0.01 + vec2(fi * 17.3, fi * 31.7));
-        let angle_offset = (noise_val - 0.5) * 1.05;
-        let dir = normalize(toward_shore * cos(angle_offset) + perp * sin(angle_offset));
+        let angle_norm = shore_angle / PI;
+        let angle_offset = hash2d(vec2(angle_norm * 4.0 + fi * 5.3, fi * 13.7)) * 2.0 * PI;
+        let phase = sdf_distance * k - w * shore.time + angle_offset;
 
-        let phase = dot(dir, world_xz) * k - w * shore.time + fi * 1.73;
+        // Normal derivative is along toward-shore direction (matches displacement)
         let dy_dphase = amplitude * cos(phase) * k;
-
-        dydx += dy_dphase * dir.x;
-        dydz += dy_dphase * dir.y;
+        dydx += dy_dphase * toward_shore.x;
+        dydz += dy_dphase * toward_shore.y;
     }
 
     return normalize(vec3(-dydx, 1.0, -dydz));
