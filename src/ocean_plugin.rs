@@ -67,8 +67,8 @@ pub struct ShoreParams {
 impl Default for ShoreParams {
     fn default() -> Self {
         Self {
-            sdf_origin: Vec2::new(-32.0, -32.0),
-            sdf_extent: Vec2::new(64.0, 64.0),
+            sdf_origin: Vec2::new(-512.0, -512.0),
+            sdf_extent: Vec2::new(1024.0, 1024.0),
             depth_scale: 1.0,
             max_depth: 1024.0,
             blend_start: 1024.0,
@@ -95,43 +95,129 @@ pub struct SdfImage {
     pub handle: Handle<Image>,
 }
 
-/// SDF for a complex island shape: union of overlapping ellipses with bumpy coastline.
-/// Returns signed distance at a UV point (0..1 range). Positive = water, negative = land.
-fn complex_island_sdf_at(uv: Vec2, center: Vec2) -> f32 {
-    // Main body: slightly elongated
-    let main_d = ((uv - center) / Vec2::new(0.28, 0.22)).length() - 1.0;
-    // Peninsula poking north-east
-    let pen_center = center + Vec2::new(0.12, 0.15);
-    let pen_d = ((uv - pen_center) / Vec2::new(0.10, 0.16)).length() - 1.0;
-    // Southern lobe
-    let south_center = center + Vec2::new(-0.08, -0.13);
-    let south_d = ((uv - south_center) / Vec2::new(0.14, 0.10)).length() - 1.0;
-    // Western bump
-    let west_center = center + Vec2::new(-0.18, 0.04);
-    let west_d = ((uv - west_center) / Vec2::new(0.08, 0.12)).length() - 1.0;
-    // Smooth union of all blobs (min = union for SDF)
-    let union_d = main_d.min(pen_d).min(south_d).min(west_d);
-    // Scale back to UV-space distance (approximate)
-    union_d * 0.25
+/// Returns true if the world-space point is inside the island (union of ellipses).
+/// The island is centered at the world origin with a total footprint of roughly 18x18 world units.
+fn is_inside_island(world_pos: Vec2) -> bool {
+    let main_d = (world_pos / Vec2::new(9.0, 7.0)).length() - 1.0;
+    let pen_d = ((world_pos - Vec2::new(3.8, 4.8)) / Vec2::new(3.2, 5.1)).length() - 1.0;
+    let south_d = ((world_pos - Vec2::new(-2.6, -4.2)) / Vec2::new(4.5, 3.2)).length() - 1.0;
+    let west_d = ((world_pos - Vec2::new(-5.8, 1.3)) / Vec2::new(2.6, 3.8)).length() - 1.0;
+    main_d.min(pen_d).min(south_d).min(west_d) <= 0.0
 }
 
-/// Generates a 512x512 R32Float SDF texture for a complex island.
-/// Positive values = water, negative = land, zero = shoreline.
-pub fn generate_island_sdf(size: u32, center: Vec2, _radius: f32) -> Image {
-    let mut data = vec![0u8; (size * size * 4) as usize]; // R32Float = 4 bytes per pixel
+/// Compute a 1D squared-distance transform in-place (Felzenszwalb & Huttenlocher).
+/// `f` is the input (squared distances), `d` is the output, length `n`.
+fn edt_1d(f: &[f32], d: &mut [f32], n: usize) {
+    let mut v = vec![0usize; n]; // locations of parabolas
+    let mut z = vec![0.0f32; n + 1]; // boundaries between parabolas
+    let mut k = 0usize;
+    z[0] = f32::NEG_INFINITY;
+    z[1] = f32::INFINITY;
 
-    for y in 0..size {
-        for x in 0..size {
-            let uv = Vec2::new(x as f32 / size as f32, y as f32 / size as f32);
-            let sdf_value = complex_island_sdf_at(uv, center);
-
-            let bytes = sdf_value.to_le_bytes();
-            let idx = ((y * size + x) * 4) as usize;
-            data[idx] = bytes[0];
-            data[idx + 1] = bytes[1];
-            data[idx + 2] = bytes[2];
-            data[idx + 3] = bytes[3];
+    for q in 1..n {
+        loop {
+            let s = ((f[q] + (q * q) as f32) - (f[v[k]] + (v[k] * v[k]) as f32))
+                / (2.0 * (q as f32 - v[k] as f32));
+            if s > z[k] {
+                k += 1;
+                v[k] = q;
+                z[k] = s;
+                z[k + 1] = f32::INFINITY;
+                break;
+            }
+            k -= 1;
         }
+    }
+
+    k = 0;
+    for q in 0..n {
+        while z[k + 1] < q as f32 {
+            k += 1;
+        }
+        d[q] = (q as f32 - v[k] as f32) * (q as f32 - v[k] as f32) + f[v[k]];
+    }
+}
+
+/// Compute exact Euclidean Distance Transform on a 2D grid.
+/// Input: `grid[y * size + x]` = 0.0 for boundary/seed pixels, f32::MAX for others.
+/// Output: each cell contains the squared Euclidean distance to the nearest seed.
+fn edt_2d(grid: &mut Vec<f32>, size: usize) {
+    let mut col = vec![0.0f32; size];
+    let mut d = vec![0.0f32; size];
+
+    // Transform along rows
+    for y in 0..size {
+        let row_start = y * size;
+        edt_1d(&grid[row_start..row_start + size], &mut d, size);
+        grid[row_start..row_start + size].copy_from_slice(&d);
+    }
+
+    // Transform along columns
+    let mut f = vec![0.0f32; size];
+    for x in 0..size {
+        for y in 0..size {
+            f[y] = grid[y * size + x];
+        }
+        edt_1d(&f, &mut col, size);
+        for y in 0..size {
+            grid[y * size + x] = col[y];
+        }
+    }
+}
+
+/// Generates an R32Float SDF texture for a complex island using exact EDT.
+/// Positive values = water, negative = land, zero = shoreline.
+/// Values are in UV-space distance (0..1 range), converted to world-space in the shader.
+pub fn generate_island_sdf(size: u32, sdf_origin: Vec2, sdf_extent: Vec2) -> Image {
+    let n = size as usize;
+    let big = (n * n) as f32; // larger than any real squared distance
+
+    // Build binary mask by converting each pixel to world coordinates
+    let mut inside = vec![false; n * n];
+    for y in 0..n {
+        for x in 0..n {
+            let uv = Vec2::new(x as f32 / n as f32, y as f32 / n as f32);
+            let world_pos = sdf_origin + uv * sdf_extent;
+            inside[y * n + x] = is_inside_island(world_pos);
+        }
+    }
+
+    // Distance from outside to nearest inside (for water pixels)
+    let mut dist_outside = vec![0.0f32; n * n];
+    // Distance from inside to nearest outside (for land pixels)
+    let mut dist_inside = vec![0.0f32; n * n];
+
+    for i in 0..n * n {
+        if inside[i] {
+            dist_outside[i] = 0.0;
+            dist_inside[i] = big;
+        } else {
+            dist_outside[i] = big;
+            dist_inside[i] = 0.0;
+        }
+    }
+
+    edt_2d(&mut dist_outside, n);
+    edt_2d(&mut dist_inside, n);
+
+    // Combine into signed distance: positive = water, negative = land
+    // Convert from pixel units to UV-space (divide by size)
+    let mut data = vec![0u8; n * n * 4];
+    for i in 0..n * n {
+        let d_water = dist_outside[i].sqrt();
+        let d_land = dist_inside[i].sqrt();
+        // Outside island (water): positive distance to shore
+        // Inside island (land): negative distance to shore
+        let sdf_pixels = if inside[i] { -d_land } else { d_water };
+        // Convert from pixel distance to UV-space distance
+        let sdf_uv = sdf_pixels / n as f32;
+
+        let bytes = sdf_uv.to_le_bytes();
+        let idx = i * 4;
+        data[idx] = bytes[0];
+        data[idx + 1] = bytes[1];
+        data[idx + 2] = bytes[2];
+        data[idx + 3] = bytes[3];
     }
 
     let descriptor = TextureDescriptor {
@@ -168,8 +254,18 @@ pub fn generate_island_sdf(size: u32, center: Vec2, _radius: f32) -> Image {
 }
 
 /// Startup system that generates the SDF texture and inserts SdfImage resource.
-fn generate_sdf_system(mut commands: Commands, mut image_assets: ResMut<Assets<Image>>) {
-    let sdf_image = generate_island_sdf(512, Vec2::new(0.5, 0.5), 0.3);
+/// If the user has already inserted an `SdfImage` resource, this system is skipped.
+fn generate_sdf_system(
+    mut commands: Commands,
+    mut image_assets: ResMut<Assets<Image>>,
+    existing: Option<Res<SdfImage>>,
+    shore_params: Res<ShoreParams>,
+) {
+    if existing.is_some() {
+        return;
+    }
+    let sdf_image =
+        generate_island_sdf(1024, shore_params.sdf_origin, shore_params.sdf_extent);
     let handle = image_assets.add(sdf_image);
     commands.insert_resource(SdfImage { handle });
 }
