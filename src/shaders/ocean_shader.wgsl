@@ -261,67 +261,147 @@ fn shore_wave_normal(
     return normalize(vec3(-dydx, 1.0, -dydz));
 }
 
-// ---- Inner Shore Zone: Contour-Following Coastal Wave Sets ----
-// Wave fronts follow the SDF contour ())) shape around the coast).
-// Each wave set spawns at the outer edge and rolls inward over time.
-// The shore angle offsets timing so different stretches of coast
-// receive sets at different times, creating natural spacing.
+// ---- Inner Shore Zone: Pulse-Driven Coastal Surf ----
+// The mask IS the wave. Radial pulse bands sweep inward from the outer
+// edge toward the coast. Each pulse is a wave crest that shoals (grows)
+// as it approaches shore, peaks, then breaks and collapses at the coast.
+// Sectors are scaled by island size so larger coastlines get more sectors.
 
 const INNER_ZONE_START: f32 = 256.0;
 const INNER_ZONE_FADE: f32 = 200.0;
-const INNER_NUM_WAVES: i32 = 5;
+const INNER_BREAK_START: f32 = 80.0;   // waves begin breaking here
+const INNER_BREAK_END: f32 = 1.0;     // waves fully collapsed at shoreline
+
+// Sector count scales with island perimeter so larger coasts get more sectors
+fn inner_sector_count() -> f32 {
+    let perimeter = max(shore.sdf_extent.x, shore.sdf_extent.y) * PI;
+    // One sector per ~200m of coastline, minimum 4
+    return max(perimeter / 200.0, 4.0);
+}
+
+// Wave set mask: for debug visualization only (matches pulse logic below)
+fn wave_set_mask(shore_angle: f32, sdf_distance: f32, time: f32) -> f32 {
+    let sectors = inner_sector_count();
+    let sector_coord = shore_angle * sectors / (2.0 * PI) + 0.5;
+    let sector_id = floor(sector_coord);
+    let sector_offset = hash2d(vec2(sector_id * 7.3, sector_id * 13.1)) * 2.0 * PI;
+
+    // Gap at sector boundaries, varied per sector
+    let sector_frac = fract(sector_coord);
+    let gap_width = 0.06 + hash2d(vec2(sector_id * 3.1, sector_id * 9.7)) * 0.18;
+    let sector_gap = smoothstep(0.0, gap_width, sector_frac) * smoothstep(1.0, 1.0 - gap_width, sector_frac);
+
+    let pulse_speed = 5.0;
+    let pulse_freq = 0.10;
+    let pulse_phase = sdf_distance * pulse_freq + pulse_speed * pulse_freq * time + sector_offset;
+    let pulse_raw = sin(pulse_phase);
+    let pulse = smoothstep(0.7, 0.95, pulse_raw);
+
+    return pulse * sector_gap;
+}
+
+// Shoaling + breaking profile for inner surf waves.
+// Grows as wave approaches shore, peaks at INNER_BREAK_START,
+// then collapses to 0 by INNER_BREAK_END.
+fn inner_shoal_profile(sdf_distance: f32) -> f32 {
+    // Shoaling: rises quickly from outer edge, nearly full strength by mid-zone
+    let dist_norm = saturate(sdf_distance / INNER_ZONE_START);
+    let shoal = saturate(1.0 - dist_norm * dist_norm); // quadratic rise: fast growth inward
+    // Breaking: gradual collapse — sqrt curve holds height longer before final drop
+    let break_t = saturate((sdf_distance - INNER_BREAK_END) / (INNER_BREAK_START - INNER_BREAK_END));
+    let breaking = sqrt(break_t);
+    return shoal * breaking;
+}
 
 fn inner_shore_displacement(
     sdf_grad: vec2<f32>,
     world_xz: vec2<f32>,
     sdf_distance: f32,
 ) -> vec4<f32> {
-    var disp = vec3(0.0);
-    var foam = 0.0;
     let toward_shore = -sdf_grad;
-
-    // Blend factor: 1 inside 200m, fades to 0 at 256m
-    let inner_blend = smoothstep(INNER_ZONE_START, INNER_ZONE_FADE, sdf_distance);
-
-    // Distance-based amplitude: largest at zone start, shrinks toward shore
-    let dist_ratio = saturate(sdf_distance / INNER_ZONE_START);
-    let dist_amp = mix(0.03, 1.0, dist_ratio);
-
-    // Shore angle: determines when this stretch of coast receives a wave set
     let shore_angle = atan2(sdf_grad.y, sdf_grad.x);
 
-    for (var i = 0; i < INNER_NUM_WAVES; i++) {
-        let fi = f32(i);
+    // Sector setup (scaled by island size)
+    let sectors = inner_sector_count();
+    // Noise wobble on sector edges: shifts the angular coordinate so boundaries aren't straight
+    let edge_wobble = (value_noise(world_xz * 0.05 + vec2(shore.time * 0.1, 0.0)) - 0.5) * 0.4;
+    let sector_coord = shore_angle * sectors / (2.0 * PI) + 0.5 + edge_wobble;
+    let sector_id = floor(sector_coord);
+    let sector_offset = hash2d(vec2(sector_id * 7.3, sector_id * 13.1)) * 2.0 * PI;
 
-        // Wavelength cycles over time — each wave has its own slow period
-        let cycle_period = 20.0 + fi * 7.0;
-        let cycle = sin(shore.time / cycle_period + fi * 2.1) * 0.5 + 0.5;
-        let wavelength = mix(12.0, 30.0, cycle);
-        let base_amp = 0.15 + fi * 0.02;
-        let amplitude = base_amp * inner_blend * dist_amp;
-        let k = 2.0 * PI / wavelength;
-        let w = sqrt(GRAVITY * k) * shore.gerstner_speed;
+    // Sector profile: full strength in central 75%, fades to zero in outer 25% each side
+    let sector_frac = fract(sector_coord);
+    let arc_fade = smoothstep(0.0, 0.25, sector_frac) * smoothstep(1.0, 0.75, sector_frac);
+    let sector_gap = arc_fade * arc_fade;  // squared: strong center peak
 
-        // Phase driven by SDF distance — crests follow shoreline contour
-        // Noise-based angle offset: each wave gets a distinct, non-uniform phase
-        // per stretch of coast so fronts are staggered/intermittent around the island
-        let angle_norm = shore_angle / PI; // -1..1
-        let angle_offset = hash2d(vec2(angle_norm * 4.0 + fi * 5.3, fi * 13.7)) * 2.0 * PI;
-        let phase = sdf_distance * k - w * shore.time + angle_offset;
+    // Outer edge blend
+    let inner_blend = smoothstep(INNER_ZONE_START, INNER_ZONE_FADE, sdf_distance);
 
-        // Gerstner displacement: moves toward shore along SDF gradient
-        let Q = 0.3;
-        let qi = Q / (k * amplitude * f32(INNER_NUM_WAVES) + 0.001);
-        disp.x += amplitude * qi * toward_shore.x * cos(phase);
-        disp.y += amplitude * sin(phase);
-        disp.z += amplitude * qi * toward_shore.y * cos(phase);
+    // Shoaling + breaking envelope
+    let shoal = inner_shoal_profile(sdf_distance);
 
-        // Foam on crests — carried all the way to shore
-        let crest = saturate(sin(phase));
-        foam += crest * amplitude * k * 0.5;
-    }
+    // Pulse phase: noise wobble on distance so band edges aren't ruler-straight
+    let pulse_speed = 7.5;
+    let pulse_freq = 0.08;
+    let dist_wobble = (value_noise(world_xz * 0.08 + vec2(0.0, shore.time * 0.15)) - 0.5) * 5.0;
+    let phase = (sdf_distance + dist_wobble) * pulse_freq + pulse_speed * pulse_freq * shore.time + sector_offset;
 
-    return vec4(disp, saturate(foam));
+    // Pulse envelope: narrows near shore — wide bands far out, very thin at coast
+    let wave_raw = sin(phase);
+    let shore_t = 1.0 - saturate(sdf_distance / INNER_ZONE_START); // 0 at edge, 1 at shore
+    let env_lo = mix(0.88, 0.96, shore_t);  // slimmer bands at all distances
+    let env_hi = mix(0.96, 0.998, shore_t);
+    let pulse_envelope = smoothstep(env_lo, env_hi, wave_raw);
+
+    // Noise to break up displacement edges — organic, non-uniform wave shapes
+    let disp_noise = value_noise(world_xz * 0.1 + vec2(shore.time * 0.2, 0.0)) * 0.4
+                   + value_noise(world_xz * 0.3 + vec2(0.0, shore.time * 0.25)) * 0.35
+                   + value_noise(world_xz * 0.8 + shore.time * 0.15) * 0.25;
+
+    let base_amp = 4.0;
+    let envelope = base_amp * inner_blend * shoal * sector_gap * pulse_envelope * disp_noise;
+
+    // Sum of sines: harmonics create sharper crests and flatter troughs
+    var height = 0.0;
+    var horiz = 0.0;
+    let Q = 0.4;
+    // Fundamental
+    height += sin(phase) * 1.0;
+    horiz += cos(phase) * 1.0;
+    // 2nd harmonic: sharpens crests
+    height += sin(phase * 2.0 + 0.3) * 0.4;
+    horiz += cos(phase * 2.0 + 0.3) * 0.4 * 2.0;
+    // 3rd harmonic: fine detail
+    height += sin(phase * 3.0 + 1.1) * 0.15;
+    horiz += cos(phase * 3.0 + 1.1) * 0.15 * 3.0;
+    // 4th harmonic: subtle sharpening
+    height += sin(phase * 4.0 + 2.7) * 0.06;
+    horiz += cos(phase * 4.0 + 2.7) * 0.06 * 4.0;
+
+    // Normalize by sum of weights (1.0 + 0.4 + 0.15 + 0.06 = 1.61)
+    height = height / 1.61;
+    horiz = horiz / 1.61;
+
+    var disp = vec3(0.0);
+    disp.x = envelope * Q * toward_shore.x * horiz;
+    disp.y = envelope * height;
+    disp.z = envelope * Q * toward_shore.y * horiz;
+
+    // Foam placement driven by wave height — foam sits on crests
+    let crest_foam = saturate(height * 2.5);  // foam triggers at lower displacement
+    // Foam fades with distance: strongest near breaking zone, lighter but present far out
+    let break_proximity = 1.0 - smoothstep(INNER_BREAK_END, INNER_BREAK_START, sdf_distance);
+    let dist_fade = 1.0 - saturate(sdf_distance / INNER_ZONE_START) * 0.5; // 1 at shore, 0.5 at edge
+    let foam_intensity = dist_fade * (0.4 + break_proximity * 0.6);
+    // Multi-scale noise for organic foam edges
+    let foam_noise = value_noise(world_xz * 0.15 + shore.time * 0.3)  * 0.5
+                   + value_noise(world_xz * 0.4 + shore.time * 0.5)   * 0.3
+                   + value_noise(world_xz * 1.2 + shore.time * 0.8)   * 0.2;
+    let foam_raw = crest_foam * envelope * sector_gap * foam_intensity;
+    // Noise modulates foam — proportional so weak foam isn't fully erased
+    let foam = saturate(foam_raw * (0.5 + foam_noise * 0.5));
+
+    return vec4(disp, foam);
 }
 
 fn inner_shore_normal(
@@ -329,40 +409,54 @@ fn inner_shore_normal(
     world_xz: vec2<f32>,
     sdf_distance: f32,
 ) -> vec3<f32> {
-    var dydx = 0.0;
-    var dydz = 0.0;
     let toward_shore = -sdf_grad;
-
-    let inner_blend = smoothstep(INNER_ZONE_START, INNER_ZONE_FADE, sdf_distance);
-
-    let dist_ratio = saturate(sdf_distance / INNER_ZONE_START);
-    let dist_amp = mix(0.03, 1.0, dist_ratio);
-
     let shore_angle = atan2(sdf_grad.y, sdf_grad.x);
 
-    for (var i = 0; i < INNER_NUM_WAVES; i++) {
-        let fi = f32(i);
+    // Must match displacement exactly
+    let sectors = inner_sector_count();
+    let edge_wobble = (value_noise(world_xz * 0.05 + vec2(shore.time * 0.1, 0.0)) - 0.5) * 0.4;
+    let sector_coord = shore_angle * sectors / (2.0 * PI) + 0.5 + edge_wobble;
+    let sector_id = floor(sector_coord);
+    let sector_offset = hash2d(vec2(sector_id * 7.3, sector_id * 13.1)) * 2.0 * PI;
 
-        // Must match displacement exactly
-        let cycle_period = 20.0 + fi * 7.0;
-        let cycle = sin(shore.time / cycle_period + fi * 2.1) * 0.5 + 0.5;
-        let wavelength = mix(12.0, 30.0, cycle);
-        let base_amp = 0.15 + fi * 0.02;
-        let amplitude = base_amp * inner_blend * dist_amp;
-        let k = 2.0 * PI / wavelength;
-        let w = sqrt(GRAVITY * k) * shore.gerstner_speed;
+    let sector_frac = fract(sector_coord);
+    let gap_width = 0.06 + hash2d(vec2(sector_id * 3.1, sector_id * 9.7)) * 0.18;
+    let sector_raw = smoothstep(0.0, gap_width, sector_frac) * smoothstep(1.0, 1.0 - gap_width, sector_frac);
+    let sector_gap = sector_raw * sector_raw;
 
-        let angle_norm = shore_angle / PI;
-        let angle_offset = hash2d(vec2(angle_norm * 4.0 + fi * 5.3, fi * 13.7)) * 2.0 * PI;
-        let phase = sdf_distance * k - w * shore.time + angle_offset;
+    let inner_blend = smoothstep(INNER_ZONE_START, INNER_ZONE_FADE, sdf_distance);
+    let shoal = inner_shoal_profile(sdf_distance);
 
-        // Normal derivative is along toward-shore direction (matches displacement)
-        let dy_dphase = amplitude * cos(phase) * k;
-        dydx += dy_dphase * toward_shore.x;
-        dydz += dy_dphase * toward_shore.y;
-    }
+    let pulse_speed = 7.5;
+    let pulse_freq = 0.08;
+    let dist_wobble = (value_noise(world_xz * 0.08 + vec2(0.0, shore.time * 0.15)) - 0.5) * 5.0;
+    let phase = (sdf_distance + dist_wobble) * pulse_freq + pulse_speed * pulse_freq * shore.time + sector_offset;
 
-    return normalize(vec3(-dydx, 1.0, -dydz));
+    let wave_raw = sin(phase);
+    let shore_t = 1.0 - saturate(sdf_distance / INNER_ZONE_START);
+    let env_lo = mix(0.82, 0.96, shore_t);
+    let env_hi = mix(0.95, 0.998, shore_t);
+    let pulse_envelope = smoothstep(env_lo, env_hi, wave_raw);
+
+    // Must match displacement noise
+    let disp_noise = value_noise(world_xz * 0.1 + vec2(shore.time * 0.2, 0.0)) * 0.4
+                   + value_noise(world_xz * 0.3 + vec2(0.0, shore.time * 0.25)) * 0.35
+                   + value_noise(world_xz * 0.8 + shore.time * 0.15) * 0.25;
+
+    let base_amp = 4.0;
+    let envelope = base_amp * inner_blend * shoal * sector_gap * pulse_envelope * disp_noise;
+
+    // Sum of sines derivative (must match displacement harmonics)
+    var dh = 0.0;
+    dh += cos(phase) * 1.0 * pulse_freq;
+    dh += cos(phase * 2.0 + 0.3) * 0.4 * 2.0 * pulse_freq;
+    dh += cos(phase * 3.0 + 1.1) * 0.15 * 3.0 * pulse_freq;
+    dh += cos(phase * 4.0 + 2.7) * 0.06 * 4.0 * pulse_freq;
+    dh = dh / 1.61;
+
+    let slope = envelope * dh;
+
+    return normalize(vec3(-slope * toward_shore.x, 1.0, -slope * toward_shore.y));
 }
 
 struct OceanVertexOutput {
@@ -476,6 +570,7 @@ const DEBUG_JACOBIAN: bool = false;
 const DEBUG_FOAM_TEXTURE: bool = false;
 const DEBUG_DISPLACEMENT: bool = false;  // Visualize raw displacement values per cascade
 const DEBUG_SDF: bool = false;           // Visualize SDF values and blend zones
+const DEBUG_WAVE_SET_MASK: bool = false; // Visualize inner shore wave set mask
 
 // PBR helper functions
 fn distribution_ggx(n: vec3<f32>, h: vec3<f32>, roughness: f32) -> f32 {
@@ -767,6 +862,24 @@ fn fragment(mesh: OceanVertexOutput) -> @location(0) vec4<f32> {
           debug_color.g = saturate(sdf_val * 2.0);  // Water distance
       }
       debug_color.b = mesh.shore_blend; // Blend zone visualization
+      return vec4(debug_color, 1.0);
+    }
+
+    // Debug mode: visualize wave set mask (perpendicular bands along coast)
+    if (DEBUG_WAVE_SET_MASK) {
+      let dbg_grad = analytical_sdf_gradient(mesh.original_xz);
+      let dbg_shore_angle = atan2(dbg_grad.y, dbg_grad.x);
+      let mask = wave_set_mask(dbg_shore_angle, mesh.sdf_distance, shore.time);
+      // Green = mask active, dark = calm gap
+      // Red tint in inner zone (< 256m), blue = beyond inner zone
+      var debug_color = vec3(0.0);
+      if (mesh.sdf_distance > 0.0 && mesh.sdf_distance < INNER_ZONE_START) {
+          debug_color = vec3(mask * 0.3, mask, mask * 0.1);
+      } else if (mesh.sdf_distance <= 0.0) {
+          debug_color = vec3(0.4, 0.2, 0.1); // land
+      } else {
+          debug_color = vec3(0.0, 0.0, 0.15); // beyond inner zone
+      }
       return vec4(debug_color, 1.0);
     }
 

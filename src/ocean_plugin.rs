@@ -183,8 +183,8 @@ impl Quality {
                 (4096.0 + 1024.0, 10000.0, 512), // Ring 2: 8 chunks
             ],
             Quality::Low => [
-                (0.0, 512.0, 512),                             // Ring 0: Center square
-                (512.0, 4096.0 + 512.0, 256),                  // Ring 1: 8 chunks
+                (0.0, 512.0, 1024),                            // Ring 0: Center square
+                (512.0, 4096.0 + 512.0, 512),                  // Ring 1: 8 chunks
                 (4096.0 + 512.0, (4096.0 + 512.0) * 2.0, 128), // Ring 2: 8 chunks
             ],
             Quality::VeryLow => [
@@ -979,7 +979,10 @@ impl Plugin for OceanPlugin {
         app.add_systems(Update, OceanCamera::ocean_follow_camera);
 
         // Sync ocean params and shore params to materials every frame
-        app.add_systems(Update, (sync_ocean_params, sync_shore_time, sync_shore_params));
+        app.add_systems(
+            Update,
+            (sync_ocean_params, sync_shore_time, sync_shore_params),
+        );
 
         app.add_plugins(MaterialPlugin::<OceanMaterial<NUMBER_OF_CASCADES>>::default());
 
