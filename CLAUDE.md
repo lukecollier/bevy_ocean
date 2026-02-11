@@ -15,7 +15,7 @@ Note: Dev builds use `opt-level = 1` with dependencies at `opt-level = 3` for fa
 
 ## Architecture Overview
 
-This is a **GPU-accelerated FFT ocean simulation** built with Bevy 0.17. The simulation uses the Phillips spectrum and implements a multi-cascade system for realistic wave rendering at multiple scales.
+This is a **GPU-accelerated FFT ocean simulation** built with Bevy 0.18. The simulation uses the Phillips spectrum and implements a multi-cascade system for realistic wave rendering at multiple scales.
 
 ### Core Pipeline Flow
 
@@ -58,6 +58,28 @@ All simulation textures are 256×256 RGBA32Float:
 - **Displacement**: XYZ wave offset + Jacobian determinant (4 mip levels)
 - **Derivatives**: Surface slopes for normal mapping (4 mip levels)
 - **Foam Persistence**: Single-channel foam accumulation
+
+### Shoreline / SDF System
+
+Shoreline waves are driven by a 2D SDF (Signed Distance Field) texture. All shore logic lives in the render shader — the compute pipeline is unchanged.
+
+- **`ShoreParams`** (`src/ocean_plugin.rs`): Resource + uniform controlling SDF mapping, Gerstner wave parameters, blend distances, and shore foam
+- **`SdfImage`** (`src/ocean_plugin.rs`): Resource holding the SDF texture handle (512×512 R32Float)
+- **`generate_island_sdf`**: Generates a circular island SDF at startup (positive = water, negative = land)
+- **Shader** (`src/shaders/ocean_shader.wgsl`): Bindings 7-9 (SDF texture, sampler, shore uniform)
+  - Vertex: samples SDF → computes blend factor → evaluates Gerstner displacement → mixes with FFT
+  - Fragment: blends Gerstner analytical normals with FFT normals, adds animated shore foam bands
+  - `DEBUG_SDF` const for visualizing SDF values and blend zones
+
+```
+SDF texture (R32Float) → world XZ → signed distance to shore
+  Positive = water, negative = land, zero = shoreline
+  Gradient → negate → wave direction toward shore
+  Distance × scale → water depth (bathymetry proxy)
+
+Blend zone:
+  Open ocean (FFT) ←── blend_start ──── blend_end ──→ Shore (Gerstner)
+```
 
 ### Render Graph Integration
 

@@ -23,6 +23,138 @@ use crate::ocean::{OceanSurface, OceanSurfaceCascadeData, OceanSurfaceParameters
 const OCEAN_SHADER_PATH: &str = "embedded://bevy_ocean/shaders/ocean_shader.wgsl";
 const NUMBER_OF_CASCADES: u32 = 3;
 
+/// Parameters controlling shoreline wave behavior via SDF-driven shore waves.
+/// Blends FFT ocean with refracted sum-of-sines waves near shorelines defined by an SDF texture.
+#[derive(Resource, ExtractResource, Clone, Copy, Debug, ShaderType)]
+pub struct ShoreParams {
+    /// World XZ origin of the SDF texture coverage area
+    pub sdf_origin: Vec2,
+    /// World XZ extent (size) the SDF texture covers
+    pub sdf_extent: Vec2,
+    /// Multiplier converting SDF distance to water depth
+    pub depth_scale: f32,
+    /// Maximum derived depth (caps shoaling amplification)
+    pub max_depth: f32,
+    /// World distance from shore where shore wave blend begins (FFT starts fading)
+    pub blend_start: f32,
+    /// World distance from shore where FFT fully fades to shore waves
+    pub blend_end: f32,
+    /// Base amplitude of shore waves
+    pub gerstner_amplitude: f32,
+    /// Fundamental wavelength for shore waves
+    pub gerstner_wavelength: f32,
+    /// Steepness parameter (0..1) — controls crest sharpness
+    pub gerstner_steepness: f32,
+    /// Number of wave harmonics (1-5)
+    pub gerstner_num_waves: f32,
+    /// Phase speed multiplier for shore waves
+    pub gerstner_speed: f32,
+    /// Distance from shore for shore foam effect
+    pub shore_foam_distance: f32,
+    /// Intensity of shore foam
+    pub shore_foam_intensity: f32,
+    /// Frequency of animated foam bands near shore
+    pub shore_foam_band_freq: f32,
+    /// Dominant swell/wave approach direction (normalized XZ vector).
+    /// Waves refract from this direction toward the shore-approaching direction
+    /// as depth decreases.
+    pub swell_direction: Vec2,
+    /// Elapsed time (updated each frame)
+    pub time: f32,
+    pub _padding1: f32,
+}
+
+impl Default for ShoreParams {
+    fn default() -> Self {
+        Self {
+            sdf_origin: Vec2::new(-32.0, -32.0),
+            sdf_extent: Vec2::new(64.0, 64.0),
+            depth_scale: 1.0,
+            max_depth: 1024.0,
+            blend_start: 1024.0,
+            blend_end: 15.0,
+            gerstner_amplitude: 0.3,
+            gerstner_wavelength: 70.0,
+            gerstner_steepness: 0.6,
+            gerstner_num_waves: 3.0,
+            gerstner_speed: 1.2,
+            shore_foam_distance: 10.0,
+            shore_foam_intensity: 0.8,
+            shore_foam_band_freq: 0.3,
+            // Default swell from +Z direction (toward -Z)
+            swell_direction: Vec2::new(0.0, -1.0),
+            time: 0.0,
+            _padding1: 0.0,
+        }
+    }
+}
+
+/// Resource holding the SDF texture handle for shoreline detection.
+#[derive(Resource, Clone)]
+pub struct SdfImage {
+    pub handle: Handle<Image>,
+}
+
+/// Generates a 512x512 R32Float SDF texture for a circular island.
+/// Positive values = water, negative = land, zero = shoreline.
+pub fn generate_island_sdf(size: u32, center: Vec2, radius: f32) -> Image {
+    let mut data = vec![0u8; (size * size * 4) as usize]; // R32Float = 4 bytes per pixel
+
+    for y in 0..size {
+        for x in 0..size {
+            let uv = Vec2::new(x as f32 / size as f32, y as f32 / size as f32);
+            let dist_to_center = uv.distance(center);
+            let sdf_value = dist_to_center - radius; // positive outside circle, negative inside
+
+            let bytes = sdf_value.to_le_bytes();
+            let idx = ((y * size + x) * 4) as usize;
+            data[idx] = bytes[0];
+            data[idx + 1] = bytes[1];
+            data[idx + 2] = bytes[2];
+            data[idx + 3] = bytes[3];
+        }
+    }
+
+    let descriptor = TextureDescriptor {
+        label: Some("Island SDF"),
+        size: Extent3d {
+            width: size,
+            height: size,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: TextureDimension::D2,
+        format: TextureFormat::R32Float,
+        usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
+        view_formats: &[],
+    };
+
+    let sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
+        address_mode_u: ImageAddressMode::ClampToEdge,
+        address_mode_v: ImageAddressMode::ClampToEdge,
+        address_mode_w: ImageAddressMode::ClampToEdge,
+        mag_filter: ImageFilterMode::Linear,
+        min_filter: ImageFilterMode::Linear,
+        ..Default::default()
+    });
+
+    Image {
+        data: Some(data),
+        texture_descriptor: descriptor,
+        sampler,
+        asset_usage: RenderAssetUsages::RENDER_WORLD | RenderAssetUsages::MAIN_WORLD,
+        ..Default::default()
+    }
+}
+
+/// Startup system that generates the SDF texture and inserts SdfImage resource.
+fn generate_sdf_system(mut commands: Commands, mut image_assets: ResMut<Assets<Image>>) {
+    let sdf_image = generate_island_sdf(512, Vec2::new(0.5, 0.5), 0.3);
+    let handle = image_assets.add(sdf_image);
+    commands.insert_resource(SdfImage { handle });
+}
+
 #[derive(Clone, Copy)]
 pub enum Quality {
     Ultra = 1024,
@@ -283,7 +415,6 @@ pub struct OceanMaterial<const N: u32> {
     // Foam persistence textures (computed each frame)
     #[texture(2, dimension = "2d_array")]
     pub t_foam_persistences: Handle<Image>,
-    // Cascade 0 - large scale (500m)
     // Foam texture
     #[texture(4)]
     #[sampler(5)]
@@ -291,6 +422,15 @@ pub struct OceanMaterial<const N: u32> {
     // Ocean parameters uniform
     #[uniform(6)]
     pub params: OceanParams,
+
+    // SDF texture for shoreline detection
+    #[texture(7)]
+    #[sampler(8)]
+    pub t_sdf: Handle<Image>,
+
+    // Shore parameters uniform
+    #[uniform(9)]
+    pub shore_params: ShoreParams,
 }
 
 impl<const N: u32> Material for OceanMaterial<N> {
@@ -346,6 +486,8 @@ impl OceanCamera {
         ocean_params: Res<OceanParams>,
         ocean_settings: Res<OceanSettings>,
         asset_server: Res<AssetServer>,
+        sdf_image: Res<SdfImage>,
+        shore_params: Res<ShoreParams>,
     ) {
         // Load foam texture
         let foam_texture: Handle<Image> =
@@ -358,6 +500,8 @@ impl OceanCamera {
             t_displacements: ocean_images.displacement_image.clone(),
             t_derivatives: ocean_images.derivative_image.clone(),
             t_foam_persistences: ocean_images.foam_persistence_image.clone(),
+            t_sdf: sdf_image.handle.clone(),
+            shore_params: *shore_params,
         });
         // LOD configuration: each ring has (inner_half, outer_half, subdivisions_per_chunk)
         // Ring 0 is a single center square (the parent)
@@ -815,6 +959,7 @@ impl Plugin for OceanPlugin {
         embedded_asset!(app, strip_prefix, "./textures/foam.png");
         // Insert default ocean parameters resource
         app.insert_resource(self.params);
+        app.insert_resource(ShoreParams::default());
         app.insert_resource(OceanSettings {
             number_of_cascades: NUMBER_OF_CASCADES,
             quality: self.quality,
@@ -827,17 +972,21 @@ impl Plugin for OceanPlugin {
             cascade_count: self.params.cascade_count,
         });
 
-        app.add_systems(Startup, (setup, OceanCamera::spawn_ocean).chain());
+        app.add_systems(
+            Startup,
+            (generate_sdf_system, setup, OceanCamera::spawn_ocean).chain(),
+        );
         app.add_systems(Update, OceanCamera::ocean_follow_camera);
 
-        // Sync ocean params to materials every frame
-        app.add_systems(Update, sync_ocean_params);
+        // Sync ocean params and shore params to materials every frame
+        app.add_systems(Update, (sync_ocean_params, sync_shore_time, sync_shore_params));
 
         app.add_plugins(MaterialPlugin::<OceanMaterial<NUMBER_OF_CASCADES>>::default());
 
         app.add_plugins((ExtractResourcePlugin::<OceanImages>::default(),));
         app.add_plugins((ExtractResourcePlugin::<OceanSettings>::default(),));
         app.add_plugins((ExtractResourcePlugin::<OceanParams>::default(),));
+        app.add_plugins((ExtractResourcePlugin::<ShoreParams>::default(),));
 
         let render_app = app.sub_app_mut(RenderApp);
         render_app.insert_resource(OceanSettings {
@@ -894,6 +1043,24 @@ fn sync_ocean_params(
     for material_handle in query.iter() {
         if let Some(material) = materials.get_mut(material_handle) {
             material.params = *ocean_params;
+        }
+    }
+}
+
+/// System to update shore params time each frame
+fn sync_shore_time(time: Res<Time>, mut shore_params: ResMut<ShoreParams>) {
+    shore_params.time = time.elapsed_secs();
+}
+
+/// System to sync ShoreParams resource to all ocean materials
+fn sync_shore_params(
+    shore_params: Res<ShoreParams>,
+    mut materials: ResMut<Assets<OceanMaterial<3>>>,
+    query: Query<&MeshMaterial3d<OceanMaterial<3>>, With<OceanSurfaceMarker>>,
+) {
+    for material_handle in query.iter() {
+        if let Some(material) = materials.get_mut(material_handle) {
+            material.shore_params = *shore_params;
         }
     }
 }

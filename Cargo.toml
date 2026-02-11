@@ -4,12 +4,12 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-bevy = { version = "0.17", features = [
+bevy = { version = "0.18", features = [
   "experimental_bevy_feathers",
   "bevy_dev_tools",
 ] }
-bevy_flycam = "0.17.0"
-bevy_rand = { version = "0.12.1", features = ["wyrand"] }
+bevy_flycam = "0.18.0"
+bevy_rand = { version = "0.14", features = ["wyrand"] }
 bytemuck = "1.24.0"
 # Set max log levels. This helps avoid unwanted low-severity log spam, which can affect performance.
 log = { version = "0.4", features = [
