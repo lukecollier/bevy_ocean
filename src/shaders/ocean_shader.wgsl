@@ -196,6 +196,7 @@ fn shore_wave_displacement(
     base_amplitude: f32,
     world_xz: vec2<f32>,
     depth: f32,
+    view_dist: f32,
 ) -> vec4<f32> {
     var disp = vec3(0.0);
     let toward_shore = -sdf_grad;
@@ -203,12 +204,23 @@ fn shore_wave_displacement(
     let num_waves = i32(shore.gerstner_num_waves);
 
     // Noisy depth: simulates uneven seabed for varied breaking
-    let depth_noise = (fbm3(world_xz * 0.05) - 0.5) * shore.shore_foam_distance;
-    let noisy_depth = max(depth + depth_noise, 0.1);
+    // Skip expensive fbm3 at distance — noise is sub-pixel anyway
+    var noisy_depth: f32;
+    if (view_dist < NEAR_DIST_THRESHOLD) {
+        let depth_noise = (fbm3(world_xz * 0.05) - 0.5) * shore.shore_foam_distance;
+        noisy_depth = max(depth + depth_noise, 0.1);
+    } else {
+        noisy_depth = max(depth, 0.1);
+    }
     let envelope = shoal_and_break(noisy_depth);
 
-    // Spatial amplitude variation — wider range for natural look
-    let amp_variation = value_noise(world_xz * 0.01) * 0.8 + 0.2; // [0.2, 1.0]
+    // Spatial amplitude variation — skip noise at distance
+    var amp_variation: f32;
+    if (view_dist < MID_DIST_THRESHOLD) {
+        amp_variation = value_noise(world_xz * 0.01) * 0.8 + 0.2;
+    } else {
+        amp_variation = 0.6; // midpoint
+    }
 
     // Jacobian partial derivatives
     var dxx = 0.0;
@@ -216,13 +228,15 @@ fn shore_wave_displacement(
     var dxz = 0.0;
 
     // 3 wave groups for natural wave sets via constructive/destructive interference
+    // LOD: < 300m = 3 groups, 300-2000m = 2 groups, > 2000m = 1 group
     let group_wavelength_scales = array<f32, 3>(1.0, 0.73, 1.35);
     let group_angle_offsets = array<f32, 3>(0.0, 0.15, -0.12);
     let group_amp_scales = array<f32, 3>(1.0, 0.8, 0.6);
     // Each group arrives in slow pulses — creates classic "wave set" pattern
     let set_speeds = array<f32, 3>(0.18, 0.25, 0.14);
 
-    for (var g = 0; g < 3; g++) {
+    let num_groups = select(1, select(2, 3, view_dist < NEAR_DIST_THRESHOLD), view_dist < MID_DIST_THRESHOLD);
+    for (var g = 0; g < num_groups; g++) {
         let base_wl = shore.gerstner_wavelength * group_wavelength_scales[g];
         let base_amp_g = base_amplitude * group_amp_scales[g];
         let group_angle = group_angle_offsets[g];
@@ -254,10 +268,16 @@ fn shore_wave_displacement(
             let dir = normalize(group_toward * cos(spread_angle) + perp * sin(spread_angle));
 
             // Along-crest envelope: noise breaks up regular wave segments
+            // Skip per-wave noise at distance — just use the sine envelope
             let along_crest = dot(perp, world_xz);
             let env_freq = 0.1 / harmonic;
-            let crest_noise = (value_noise(world_xz * 0.04 + vec2(fi * 3.7, f32(g) * 2.1)) - 0.5) * 2.0;
-            let env = max(sin(along_crest * env_freq + fi * 2.39 + f32(g) * 1.7) + crest_noise, 0.0);
+            var env: f32;
+            if (view_dist < NEAR_DIST_THRESHOLD) {
+                let crest_noise = (value_noise(world_xz * 0.04 + vec2(fi * 3.7, f32(g) * 2.1)) - 0.5) * 2.0;
+                env = max(sin(along_crest * env_freq + fi * 2.39 + f32(g) * 1.7) + crest_noise, 0.0);
+            } else {
+                env = max(sin(along_crest * env_freq + fi * 2.39 + f32(g) * 1.7), 0.0);
+            }
 
             let phase = dot(dir, world_xz) * k - w * shore.time;
             let sin_p = sin(phase);
@@ -288,6 +308,7 @@ fn shore_wave_normal(
     base_amplitude: f32,
     world_xz: vec2<f32>,
     depth: f32,
+    view_dist: f32,
 ) -> vec3<f32> {
     var dydx = 0.0;
     var dydz = 0.0;
@@ -295,20 +316,32 @@ fn shore_wave_normal(
     let toward_shore = -sdf_grad;
 
     // Noisy depth (must match displacement)
-    let depth_noise = (fbm3(world_xz * 0.05) - 0.5) * shore.shore_foam_distance;
-    let noisy_depth = max(depth + depth_noise, 0.1);
+    // Skip expensive fbm3 at distance
+    var noisy_depth: f32;
+    if (view_dist < NEAR_DIST_THRESHOLD) {
+        let depth_noise = (fbm3(world_xz * 0.05) - 0.5) * shore.shore_foam_distance;
+        noisy_depth = max(depth + depth_noise, 0.1);
+    } else {
+        noisy_depth = max(depth, 0.1);
+    }
     let envelope = shoal_and_break(noisy_depth);
 
     // Must match displacement
-    let amp_variation = value_noise(world_xz * 0.01) * 0.8 + 0.2;
+    var amp_variation: f32;
+    if (view_dist < MID_DIST_THRESHOLD) {
+        amp_variation = value_noise(world_xz * 0.01) * 0.8 + 0.2;
+    } else {
+        amp_variation = 0.6;
+    }
 
-    // 3 wave groups (must match displacement)
+    // Wave groups (must match displacement LOD)
     let group_wavelength_scales = array<f32, 3>(1.0, 0.73, 1.35);
     let group_angle_offsets = array<f32, 3>(0.0, 0.15, -0.12);
     let group_amp_scales = array<f32, 3>(1.0, 0.8, 0.6);
     let set_speeds = array<f32, 3>(0.18, 0.25, 0.14);
 
-    for (var g = 0; g < 3; g++) {
+    let num_groups = select(1, select(2, 3, view_dist < NEAR_DIST_THRESHOLD), view_dist < MID_DIST_THRESHOLD);
+    for (var g = 0; g < num_groups; g++) {
         let base_wl = shore.gerstner_wavelength * group_wavelength_scales[g];
         let base_amp_g = base_amplitude * group_amp_scales[g];
         let group_angle = group_angle_offsets[g];
@@ -337,11 +370,16 @@ fn shore_wave_normal(
             let spread_angle = (fi - f32(num_waves - 1) * 0.5) * 0.12;
             let dir = normalize(group_toward * cos(spread_angle) + perp * sin(spread_angle));
 
-            // Along-crest envelope (must match displacement)
+            // Along-crest envelope (must match displacement LOD)
             let along_crest = dot(perp, world_xz);
             let env_freq = 0.1 / harmonic;
-            let crest_noise = (value_noise(world_xz * 0.04 + vec2(fi * 3.7, f32(g) * 2.1)) - 0.5) * 2.0;
-            let env = max(sin(along_crest * env_freq + fi * 2.39 + f32(g) * 1.7) + crest_noise, 0.0);
+            var env: f32;
+            if (view_dist < NEAR_DIST_THRESHOLD) {
+                let crest_noise = (value_noise(world_xz * 0.04 + vec2(fi * 3.7, f32(g) * 2.1)) - 0.5) * 2.0;
+                env = max(sin(along_crest * env_freq + fi * 2.39 + f32(g) * 1.7) + crest_noise, 0.0);
+            } else {
+                env = max(sin(along_crest * env_freq + fi * 2.39 + f32(g) * 1.7), 0.0);
+            }
 
             // Clean traveling wave — must match displacement
             let phase = dot(dir, world_xz) * k - w * shore.time;
@@ -509,10 +547,12 @@ fn vertex(in: Vertex) -> OceanVertexOutput {
     // shore_blend: 0 in open ocean, 1 near shore.
     // Combines SDF-distance blend with inscribed circle fade to guarantee
     // shore effects reach zero before the texture boundary.
+    // LOD: fade shore to pure FFT beyond MID_DIST_THRESHOLD (2000m)
     var shore_blend = 0.0;
     if (sdf_world_dist > 0.0) {
         let sdf_blend = 1.0 - smoothstep(shore.blend_end, shore.blend_start, sdf_world_dist);
-        shore_blend = sdf_blend * tex_fade;
+        let dist_fade = 1.0 - smoothstep(NEAR_DIST_THRESHOLD, MID_DIST_THRESHOLD, view_dist);
+        shore_blend = sdf_blend * tex_fade * dist_fade;
     }
 
     // Land (inside island): no displacement at all
@@ -528,7 +568,7 @@ fn vertex(in: Vertex) -> OceanVertexOutput {
             let grad = analytical_sdf_gradient(original_xz);
             let depth = sdf_to_depth(sdf_world_dist);
 
-            let shore_result = shore_wave_displacement(grad, shore.gerstner_amplitude, original_xz, depth);
+            let shore_result = shore_wave_displacement(grad, shore.gerstner_amplitude, original_xz, depth, view_dist);
             let shore_disp = shore_result.xyz;
             shore_wave_h = shore_result.w; // Jacobian from Gerstner waves
             // FFT vertical stays for surface texture; horizontal goes to 0
@@ -685,21 +725,24 @@ fn fragment(mesh: OceanVertexOutput) -> @location(0) vec4<f32> {
         let sdf_world_dist_frag = analytical_sdf(mesh.original_xz);
         let grad = analytical_sdf_gradient(mesh.original_xz);
         let depth = sdf_to_depth(sdf_world_dist_frag);
-        let s_normal = shore_wave_normal(grad, shore.gerstner_amplitude, mesh.original_xz, depth);
+        let s_normal = shore_wave_normal(grad, shore.gerstner_amplitude, mesh.original_xz, depth, view_dist);
 
         // Multi-octave normal perturbation: FBM-style surface ripple detail
-        let wxz = mesh.original_xz;
-        let t = shore.time * 0.3;
-        // 3 octaves at increasing frequency and decreasing amplitude
-        var px = 0.0;
-        var pz = 0.0;
-        px += (value_noise(wxz * 0.5 + vec2(t, 0.0)) - 0.5) * 0.12;
-        pz += (value_noise(wxz * 0.5 + vec2(43.7, 91.3 + t)) - 0.5) * 0.12;
-        px += (value_noise(wxz * 1.5 + vec2(t * 1.3, 17.1)) - 0.5) * 0.08;
-        pz += (value_noise(wxz * 1.5 + vec2(61.2, t * 1.3)) - 0.5) * 0.08;
-        px += (value_noise(wxz * 4.0 + vec2(t * 1.7, 33.9)) - 0.5) * 0.05;
-        pz += (value_noise(wxz * 4.0 + vec2(88.4, t * 1.7)) - 0.5) * 0.05;
-        let perturbed = normalize(s_normal + vec3(px, 0.0, pz));
+        // Skip at distance — sub-pixel detail not worth the noise evaluations
+        var perturbed = s_normal;
+        if (view_dist < NEAR_DIST_THRESHOLD) {
+            let wxz = mesh.original_xz;
+            let t = shore.time * 0.3;
+            var px = 0.0;
+            var pz = 0.0;
+            px += (value_noise(wxz * 0.5 + vec2(t, 0.0)) - 0.5) * 0.12;
+            pz += (value_noise(wxz * 0.5 + vec2(43.7, 91.3 + t)) - 0.5) * 0.12;
+            px += (value_noise(wxz * 1.5 + vec2(t * 1.3, 17.1)) - 0.5) * 0.08;
+            pz += (value_noise(wxz * 1.5 + vec2(61.2, t * 1.3)) - 0.5) * 0.08;
+            px += (value_noise(wxz * 4.0 + vec2(t * 1.7, 33.9)) - 0.5) * 0.05;
+            pz += (value_noise(wxz * 4.0 + vec2(88.4, t * 1.7)) - 0.5) * 0.05;
+            perturbed = normalize(s_normal + vec3(px, 0.0, pz));
+        }
 
         normal = normalize(mix(normal, perturbed, mesh.shore_blend));
     }
@@ -774,25 +817,37 @@ fn fragment(mesh: OceanVertexOutput) -> @location(0) vec4<f32> {
     // Add FFT foam as highlights (uses foam color from params)
     ocean_color = ocean_color + params.foam_color * foam_mask * 0.8;
 
-    // Shore foam: Jacobian-based breaking detection per pixel
-    // Applied directly to ocean_color — bypasses FFT noise mask which would suppress it
+    // Shore foam: Jacobian-based breaking detection
+    // LOD: < 200m uses per-pixel Jacobian + trailing foam (expensive but precise)
+    //      >= 200m uses vertex-interpolated Jacobian (cheap, already computed)
     if (mesh.shore_blend > 0.001) {
-        let grad = analytical_sdf_gradient(mesh.original_xz);
-        let frag_depth = sdf_to_depth(analytical_sdf(mesh.original_xz));
-        let J_trail = shore_gerstner_jacobian(grad, shore.gerstner_amplitude, mesh.original_xz, frag_depth);
-        let J = J_trail.x;
-        let trail_raw = J_trail.y;
+        let shore_lod_dist = 200.0;
+        let sdf_dist = analytical_sdf(mesh.original_xz);
+        let frag_depth = sdf_to_depth(sdf_dist);
+        var J: f32;
+        var trail_raw = 0.0;
+
+        if (view_dist < shore_lod_dist) {
+            // Near: full per-pixel Jacobian with trailing foam
+            let grad = analytical_sdf_gradient(mesh.original_xz);
+            let J_trail = shore_gerstner_jacobian(grad, shore.gerstner_amplitude, mesh.original_xz, frag_depth);
+            J = J_trail.x;
+            trail_raw = J_trail.y;
+        } else {
+            // Far: use vertex-interpolated Jacobian, skip per-pixel evaluation
+            J = mesh.shore_jacobian;
+        }
 
         // Foam where wave is steepening toward breaking (J < ~0.3)
-        // J=1 is flat, J=0 is about to fold, J<0 is folded over
         let foam_threshold = 0.3;
         let break_intensity = saturate((foam_threshold - J) * params.foam_multiplier);
 
         // Multi-scale foam texture for organic breakup
-        let foam_uv = mesh.original_xz * params.foam_tile_scale * 0.03;
-        let foam_fine = textureSample(t_foam, s_ocean, foam_uv * 3.0).r;
-        let foam_med = textureSample(t_foam, s_ocean, foam_uv).r;
-        let foam_broad = textureSample(t_foam, s_ocean, foam_uv * 0.3).r;
+        // Use same UV convention as FFT: world_xz / length_scale * foam_tile_scale
+        let shore_foam_uv = mesh.original_xz / shore.gerstner_wavelength * params.foam_tile_scale;
+        let foam_fine = textureSample(t_foam, s_ocean, shore_foam_uv * 3.0).r;
+        let foam_med = textureSample(t_foam, s_ocean, shore_foam_uv).r;
+        let foam_broad = textureSample(t_foam, s_ocean, shore_foam_uv * 0.3).r;
 
         // Procedural noise for variation independent of texture tiling
         let foam_proc = fbm3(mesh.original_xz * 0.08 + shore.time * 0.05);
@@ -803,14 +858,24 @@ fn fragment(mesh: OceanVertexOutput) -> @location(0) vec4<f32> {
         // Crest foam: sharp breaking foam at the wave front
         let crest_foam = break_intensity * smoothstep(0.1, 0.35, foam_pattern + break_intensity * 0.4);
 
-        // Trail foam: dissipating foam left behind the breaking crest
-        // Uses a softer texture blend — trails are smoother, less sharp than active crests
+        // Trail foam: dissipating foam left behind the breaking crest (near LOD only)
         let trail_pattern = foam_broad * (foam_med * 0.5 + 0.5) * (0.4 + foam_proc * 0.6);
         let trail_foam = trail_raw * trail_pattern * 0.6;
 
-        let shore_foam = crest_foam + trail_foam * (1.0 - crest_foam);
+        // Wash zone foam: persistent turbulent foam in very shallow water (beach)
+        // Strongest at waterline, fades out over ~15m depth
+        let wash_depth = 15.0;
+        let wash_strength = saturate(1.0 - frag_depth / wash_depth);
+        // Wave phase modulation — foam pulses brighter as waves wash in
+        let wash_pulse = 0.5 + 0.5 * sin(sdf_dist * 0.3 - shore.time * 1.2);
+        // Patchy noise so it's not a solid white band
+        let wash_noise = foam_broad * foam_proc;
+        let wash_foam = wash_strength * wash_strength * wash_pulse * smoothstep(0.1, 0.4, wash_noise) * 0.7;
 
-        ocean_color = ocean_color + params.foam_color * shore_foam * shore.shore_foam_intensity;
+        let shore_foam = crest_foam + trail_foam * (1.0 - crest_foam);
+        let total_shore_foam = shore_foam + wash_foam * (1.0 - shore_foam);
+
+        ocean_color = ocean_color + params.foam_color * total_shore_foam * shore.shore_foam_intensity;
     }
 
     // Add ambient light
