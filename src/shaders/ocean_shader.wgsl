@@ -357,12 +357,13 @@ fn shore_wave_normal(
 
 // Per-pixel Jacobian for pixel-perfect foam in fragment shader.
 // Re-evaluates all Gerstner waves but only computes Jacobian partials (no displacement).
+// Returns vec2(Jacobian, trailing_foam)
 fn shore_gerstner_jacobian(
     sdf_grad: vec2<f32>,
     base_amplitude: f32,
     world_xz: vec2<f32>,
     depth: f32,
-) -> f32 {
+) -> vec2<f32> {
     let toward_shore = -sdf_grad;
     let Q = shore.gerstner_steepness;
     let num_waves = i32(shore.gerstner_num_waves);
@@ -377,6 +378,7 @@ fn shore_gerstner_jacobian(
     var dxx = 0.0;
     var dzz = 0.0;
     var dxz = 0.0;
+    var trail_foam = 0.0;
 
     // 3 wave groups (must match displacement)
     let group_wavelength_scales = array<f32, 3>(1.0, 0.73, 1.35);
@@ -427,10 +429,25 @@ fn shore_gerstner_jacobian(
             dxx += Ak * dir.x * dir.x * sin_p;
             dzz += Ak * dir.y * dir.y * sin_p;
             dxz += Ak * dir.x * dir.y * sin_p;
+
+            // Trailing foam: compute how far behind the crest this point is.
+            // Crest is at sin(phase) = 1 (phase = PI/2 mod 2PI).
+            // phase_behind: 0 at crest, increases shore-ward behind it.
+            let wave_steepness = amplitude * env * k * qi;
+            if (wave_steepness > 0.3) {
+                // Wrap phase into [0, 2PI), shift so 0 = crest
+                let p = phase - PI * 0.5;
+                let phase_behind = (1.0 - sin(p)) * 0.5; // 0 at crest, 1 at trough behind
+                // Decay trail: strongest just behind crest, fading over ~half wavelength
+                let trail = exp(-phase_behind * 4.0) * phase_behind;
+                // Scale by how steep this wave is (steeper = more foam left behind)
+                trail_foam += trail * saturate((wave_steepness - 0.3) * 3.0);
+            }
         }
     }
 
-    return (1.0 - dxx) * (1.0 - dzz) - dxz * dxz;
+    let J = (1.0 - dxx) * (1.0 - dzz) - dxz * dxz;
+    return vec2(J, saturate(trail_foam));
 }
 
 
@@ -762,7 +779,9 @@ fn fragment(mesh: OceanVertexOutput) -> @location(0) vec4<f32> {
     if (mesh.shore_blend > 0.001) {
         let grad = analytical_sdf_gradient(mesh.original_xz);
         let frag_depth = sdf_to_depth(analytical_sdf(mesh.original_xz));
-        let J = shore_gerstner_jacobian(grad, shore.gerstner_amplitude, mesh.original_xz, frag_depth);
+        let J_trail = shore_gerstner_jacobian(grad, shore.gerstner_amplitude, mesh.original_xz, frag_depth);
+        let J = J_trail.x;
+        let trail_raw = J_trail.y;
 
         // Foam where wave is steepening toward breaking (J < ~0.3)
         // J=1 is flat, J=0 is about to fold, J<0 is folded over
@@ -781,8 +800,15 @@ fn fragment(mesh: OceanVertexOutput) -> @location(0) vec4<f32> {
         // Combined: broad patches modulate medium detail with fine breakup
         let foam_pattern = foam_broad * (foam_med * 0.7 + foam_fine * 0.3) * (0.5 + foam_proc * 0.5);
 
-        // Foam in organic patches — stronger breaking pushes more through the noise threshold
-        let shore_foam = break_intensity * smoothstep(0.1, 0.35, foam_pattern + break_intensity * 0.4);
+        // Crest foam: sharp breaking foam at the wave front
+        let crest_foam = break_intensity * smoothstep(0.1, 0.35, foam_pattern + break_intensity * 0.4);
+
+        // Trail foam: dissipating foam left behind the breaking crest
+        // Uses a softer texture blend — trails are smoother, less sharp than active crests
+        let trail_pattern = foam_broad * (foam_med * 0.5 + 0.5) * (0.4 + foam_proc * 0.6);
+        let trail_foam = trail_raw * trail_pattern * 0.6;
+
+        let shore_foam = crest_foam + trail_foam * (1.0 - crest_foam);
 
         ocean_color = ocean_color + params.foam_color * shore_foam * shore.shore_foam_intensity;
     }

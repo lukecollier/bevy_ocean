@@ -264,8 +264,7 @@ fn generate_sdf_system(
     if existing.is_some() {
         return;
     }
-    let sdf_image =
-        generate_island_sdf(1024, shore_params.sdf_origin, shore_params.sdf_extent);
+    let sdf_image = generate_island_sdf(1024, shore_params.sdf_origin, shore_params.sdf_extent);
     let handle = image_assets.add(sdf_image);
     commands.insert_resource(SdfImage { handle });
 }
@@ -298,9 +297,9 @@ impl Quality {
                 (4096.0 + 1024.0, 10000.0, 512), // Ring 2: 8 chunks
             ],
             Quality::Low => [
-                (0.0, 512.0, 1024),                            // Ring 0: Center square
-                (512.0, 4096.0 + 512.0, 512),                  // Ring 1: 8 chunks
-                (4096.0 + 512.0, (4096.0 + 512.0) * 2.0, 128), // Ring 2: 8 chunks
+                (0.0, 512.0, 256),                            // Ring 0: Center square
+                (512.0, 4096.0 + 512.0, 64),                  // Ring 1: 8 chunks
+                (4096.0 + 512.0, (4096.0 + 512.0) * 2.0, 32), // Ring 2: 8 chunks
             ],
             Quality::VeryLow => [
                 (0.0, 1024.0, 128),             // Ring 0: Center square
