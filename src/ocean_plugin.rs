@@ -71,7 +71,7 @@ impl Default for ShoreParams {
             sdf_extent: Vec2::new(1024.0, 1024.0),
             depth_scale: 1.0,
             max_depth: 1024.0,
-            blend_start: 1024.0,
+            blend_start: 2048.0,
             blend_end: 15.0,
             gerstner_amplitude: 0.3,
             gerstner_wavelength: 70.0,
@@ -90,9 +90,25 @@ impl Default for ShoreParams {
 }
 
 /// Resource holding the SDF texture handle for shoreline detection.
+/// This is an internal resource — users should provide a `HeightmapImage` instead.
 #[derive(Resource, Clone)]
 pub struct SdfImage {
     pub handle: Handle<Image>,
+}
+
+/// User-facing resource for providing terrain height data.
+/// The ocean system generates an SDF internally from this heightmap.
+/// Any mutation (via `ResMut`) triggers SDF regeneration.
+#[derive(Resource, Clone)]
+pub struct HeightmapImage {
+    /// Handle to the heightmap texture (R32Float or similar, values in -1..1)
+    pub image: Handle<Image>,
+    /// World-space position of the heightmap's bottom-left corner
+    pub world_offset: Vec2,
+    /// World-space size the heightmap covers (width, height)
+    pub world_size: Vec2,
+    /// Height threshold for sea level (-1..1). Below = water, above = land.
+    pub sea_level: f32,
 }
 
 /// Returns true if the world-space point is inside the island (union of ellipses).
@@ -253,20 +269,333 @@ pub fn generate_island_sdf(size: u32, sdf_origin: Vec2, sdf_extent: Vec2) -> Ima
     }
 }
 
-/// Startup system that generates the SDF texture and inserts SdfImage resource.
-/// If the user has already inserted an `SdfImage` resource, this system is skipped.
-fn generate_sdf_system(
+/// Generates a test heightmap: a smooth island (negative = above sea level, positive = below).
+/// The island is a combination of gaussian bumps centered in the heightmap.
+/// Values are in -1..1 range where negative = land, positive = deep water.
+pub fn generate_test_heightmap(width: u32, height: u32) -> Image {
+    let w = width as usize;
+    let h = height as usize;
+    let mut data = vec![0u8; w * h * 4]; // R32Float
+
+    for y in 0..h {
+        for x in 0..w {
+            let u = x as f32 / w as f32;
+            let v = y as f32 / h as f32;
+
+            // Center of heightmap in UV space
+            let cx = u - 0.5;
+            let cy = v - 0.5;
+
+            // Island shape: overlapping gaussian bumps (tight = small island)
+            let main = (-((cx * cx + cy * cy) * 72.0)).exp();
+            let pen = (-(((cx - 0.07) * (cx - 0.07) + (cy - 0.1) * (cy - 0.1)) * 120.0)).exp()
+                * 0.7;
+            let south =
+                (-(((cx + 0.05) * (cx + 0.05) + (cy + 0.09) * (cy + 0.09)) * 100.0)).exp() * 0.6;
+
+            let island_height = (main + pen + south).min(1.0);
+
+            // Convert to heightmap value: +1 = tall land, -1 = deep water
+            // sea_level will be at 0.0 by default
+            let value = island_height * 2.0 - 1.0;
+
+            let bytes = value.to_le_bytes();
+            let idx = (y * w + x) * 4;
+            data[idx] = bytes[0];
+            data[idx + 1] = bytes[1];
+            data[idx + 2] = bytes[2];
+            data[idx + 3] = bytes[3];
+        }
+    }
+
+    let descriptor = TextureDescriptor {
+        label: Some("Test Heightmap"),
+        size: Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: TextureDimension::D2,
+        format: TextureFormat::R32Float,
+        usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
+        view_formats: &[],
+    };
+
+    Image {
+        data: Some(data),
+        texture_descriptor: descriptor,
+        sampler: ImageSampler::Default,
+        asset_usage: RenderAssetUsages::MAIN_WORLD,
+        ..Default::default()
+    }
+}
+
+/// Samples the red channel from a heightmap image at a given pixel index.
+/// Supports R32Float (4 bytes/pixel), RGBA32Float (16 bytes/pixel),
+/// Rgba8Unorm (4 bytes/pixel, 0-255 mapped to 0-1 then scaled to -1..1),
+/// and R8Unorm (1 byte/pixel).
+fn sample_heightmap_red(data: &[u8], pixel_index: usize, format: TextureFormat) -> f32 {
+    match format {
+        TextureFormat::R32Float => {
+            let idx = pixel_index * 4;
+            f32::from_le_bytes([data[idx], data[idx + 1], data[idx + 2], data[idx + 3]])
+        }
+        TextureFormat::Rgba32Float => {
+            let idx = pixel_index * 16; // 4 floats × 4 bytes
+            f32::from_le_bytes([data[idx], data[idx + 1], data[idx + 2], data[idx + 3]])
+        }
+        TextureFormat::Rgba8Unorm | TextureFormat::Rgba8UnormSrgb => {
+            let idx = pixel_index * 4;
+            // Map 0-255 to -1..1
+            data[idx] as f32 / 127.5 - 1.0
+        }
+        TextureFormat::R8Unorm => {
+            // Map 0-255 to -1..1
+            data[pixel_index] as f32 / 127.5 - 1.0
+        }
+        _ => {
+            // Fallback: try reading as R32Float
+            let idx = pixel_index * 4;
+            if idx + 3 < data.len() {
+                f32::from_le_bytes([data[idx], data[idx + 1], data[idx + 2], data[idx + 3]])
+            } else {
+                0.0
+            }
+        }
+    }
+}
+
+/// Generates an SDF texture from a heightmap using exact EDT.
+/// Samples the heightmap red channel at each SDF texel, applies sea_level threshold,
+/// then computes signed distance via Felzenszwalb EDT.
+fn generate_sdf_from_heightmap(
+    heightmap_data: &[u8],
+    hm_size: usize,
+    hm_format: TextureFormat,
+    sea_level: f32,
+) -> Image {
+    let n = hm_size;
+    let big = (n * n) as f32;
+
+    // Read all height values and classify inside/outside
+    let mut heights = vec![0.0f32; n * n];
+    let mut inside = vec![false; n * n];
+    for i in 0..n * n {
+        heights[i] = sample_heightmap_red(heightmap_data, i, hm_format);
+        inside[i] = heights[i] > sea_level;
+    }
+
+    // Anti-aliased EDT seeding: instead of binary 0/MAX, compute sub-pixel
+    // distance to the sea-level contour at boundary pixels.
+    // For each pixel adjacent to the boundary, interpolate where the sea-level
+    // crossing occurs between this pixel and its neighbour.
+    let mut dist_outside = vec![0.0f32; n * n]; // distance to nearest land (for water pixels)
+    let mut dist_inside = vec![0.0f32; n * n]; // distance to nearest water (for land pixels)
+
+    for y in 0..n {
+        for x in 0..n {
+            let i = y * n + x;
+            let h = heights[i];
+            let is_land = inside[i];
+
+            // Check if any 4-connected neighbour crosses sea level
+            let mut min_frac_sq = big;
+            let neighbours: [(i32, i32); 4] = [(-1, 0), (1, 0), (0, -1), (0, 1)];
+            for (dx, dy) in neighbours {
+                let nx = x as i32 + dx;
+                let ny = y as i32 + dy;
+                if nx >= 0 && nx < n as i32 && ny >= 0 && ny < n as i32 {
+                    let ni = ny as usize * n + nx as usize;
+                    if inside[ni] != is_land {
+                        // Boundary crossing: interpolate fractional distance
+                        // The sea-level contour crosses between h and heights[ni]
+                        let h_n = heights[ni];
+                        let denom = (h - h_n).abs();
+                        let frac = if denom > 1e-8 {
+                            ((h - sea_level).abs() / denom).clamp(0.0, 1.0)
+                        } else {
+                            0.5
+                        };
+                        // Squared distance along this axis (fractional pixel distance)
+                        let frac_sq = frac * frac;
+                        min_frac_sq = min_frac_sq.min(frac_sq);
+                    }
+                }
+            }
+
+            // Also check diagonal neighbours for better accuracy
+            let diags: [(i32, i32); 4] = [(-1, -1), (1, -1), (-1, 1), (1, 1)];
+            for (dx, dy) in diags {
+                let nx = x as i32 + dx;
+                let ny = y as i32 + dy;
+                if nx >= 0 && nx < n as i32 && ny >= 0 && ny < n as i32 {
+                    let ni = ny as usize * n + nx as usize;
+                    if inside[ni] != is_land {
+                        let h_n = heights[ni];
+                        let denom = (h - h_n).abs();
+                        let frac = if denom > 1e-8 {
+                            ((h - sea_level).abs() / denom).clamp(0.0, 1.0)
+                        } else {
+                            0.5
+                        };
+                        // Diagonal distance: frac along a sqrt(2) direction
+                        let frac_sq = frac * frac * 2.0;
+                        min_frac_sq = min_frac_sq.min(frac_sq);
+                    }
+                }
+            }
+
+            if min_frac_sq < big {
+                // Boundary pixel: seed with sub-pixel squared distance
+                if is_land {
+                    dist_outside[i] = 0.0; // land pixel is a seed for outside distance
+                    dist_inside[i] = min_frac_sq;
+                } else {
+                    dist_outside[i] = min_frac_sq;
+                    dist_inside[i] = 0.0; // water pixel is a seed for inside distance
+                }
+            } else {
+                // Interior pixel: no boundary neighbour
+                if is_land {
+                    dist_outside[i] = 0.0;
+                    dist_inside[i] = big;
+                } else {
+                    dist_outside[i] = big;
+                    dist_inside[i] = 0.0;
+                }
+            }
+        }
+    }
+
+    edt_2d(&mut dist_outside, n);
+    edt_2d(&mut dist_inside, n);
+
+    // Combine into signed distance: positive = water, negative = land
+    let mut data = vec![0u8; n * n * 4];
+    for i in 0..n * n {
+        let d_water = dist_outside[i].sqrt();
+        let d_land = dist_inside[i].sqrt();
+        let sdf_pixels = if inside[i] { -d_land } else { d_water };
+        let sdf_uv = sdf_pixels / n as f32;
+
+        let bytes = sdf_uv.to_le_bytes();
+        let idx = i * 4;
+        data[idx] = bytes[0];
+        data[idx + 1] = bytes[1];
+        data[idx + 2] = bytes[2];
+        data[idx + 3] = bytes[3];
+    }
+
+    let sdf_size = n as u32;
+    let descriptor = TextureDescriptor {
+        label: Some("Heightmap SDF"),
+        size: Extent3d {
+            width: sdf_size,
+            height: sdf_size,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: TextureDimension::D2,
+        format: TextureFormat::R32Float,
+        usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
+        view_formats: &[],
+    };
+
+    let sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
+        address_mode_u: ImageAddressMode::ClampToEdge,
+        address_mode_v: ImageAddressMode::ClampToEdge,
+        address_mode_w: ImageAddressMode::ClampToEdge,
+        mag_filter: ImageFilterMode::Linear,
+        min_filter: ImageFilterMode::Linear,
+        ..Default::default()
+    });
+
+    Image {
+        data: Some(data),
+        texture_descriptor: descriptor,
+        sampler,
+        asset_usage: RenderAssetUsages::RENDER_WORLD | RenderAssetUsages::MAIN_WORLD,
+        ..Default::default()
+    }
+}
+
+/// Startup system: if no HeightmapImage exists, generates a test one.
+fn generate_default_heightmap(
     mut commands: Commands,
     mut image_assets: ResMut<Assets<Image>>,
-    existing: Option<Res<SdfImage>>,
-    shore_params: Res<ShoreParams>,
+    existing: Option<Res<HeightmapImage>>,
 ) {
     if existing.is_some() {
         return;
     }
-    let sdf_image = generate_island_sdf(1024, shore_params.sdf_origin, shore_params.sdf_extent);
-    let handle = image_assets.add(sdf_image);
-    commands.insert_resource(SdfImage { handle });
+    let heightmap = generate_test_heightmap(1024, 1024);
+    let handle = image_assets.add(heightmap);
+    commands.insert_resource(HeightmapImage {
+        image: handle,
+        world_offset: Vec2::new(-2048.0, -2048.0),
+        world_size: Vec2::new(4096.0, 4096.0),
+        sea_level: 0.0,
+    });
+}
+
+/// System that regenerates the SDF whenever the HeightmapImage resource changes.
+/// Also updates ShoreParams to match the heightmap's world coverage.
+fn update_sdf_from_heightmap(
+    heightmap: Res<HeightmapImage>,
+    mut commands: Commands,
+    mut image_assets: ResMut<Assets<Image>>,
+    existing_sdf: Option<Res<SdfImage>>,
+    mut shore_params: ResMut<ShoreParams>,
+) {
+    if !heightmap.is_changed() {
+        return;
+    }
+
+    // Extract heightmap data before mutating image_assets
+    let (hm_data, hm_size, hm_format) = {
+        let Some(hm_image) = image_assets.get(&heightmap.image) else {
+            return;
+        };
+        let Some(data) = &hm_image.data else {
+            return;
+        };
+        let width = hm_image.texture_descriptor.size.width as usize;
+        let height = hm_image.texture_descriptor.size.height as usize;
+        assert_eq!(width, height, "Heightmap must be square (got {}x{})", width, height);
+        (
+            data.clone(),
+            width,
+            hm_image.texture_descriptor.format,
+        )
+    };
+
+    // SDF covers the same world area as the heightmap (1:1 pixel mapping)
+    let sdf_origin = heightmap.world_offset;
+    let sdf_extent = heightmap.world_size;
+
+    let sdf_image = generate_sdf_from_heightmap(
+        &hm_data,
+        hm_size,
+        hm_format,
+        heightmap.sea_level,
+    );
+
+    // Update or insert the SDF resource
+    if let Some(existing) = existing_sdf {
+        if let Some(gpu_image) = image_assets.get_mut(&existing.handle) {
+            *gpu_image = sdf_image;
+        }
+    } else {
+        let handle = image_assets.add(sdf_image);
+        commands.insert_resource(SdfImage { handle });
+    }
+
+    // Update ShoreParams to match heightmap coverage
+    shore_params.sdf_origin = sdf_origin;
+    shore_params.sdf_extent = sdf_extent;
 }
 
 #[derive(Clone, Copy)]
@@ -1088,9 +1417,18 @@ impl Plugin for OceanPlugin {
 
         app.add_systems(
             Startup,
-            (generate_sdf_system, setup, OceanCamera::spawn_ocean).chain(),
+            (
+                generate_default_heightmap,
+                update_sdf_from_heightmap,
+                setup,
+                OceanCamera::spawn_ocean,
+            )
+                .chain(),
         );
-        app.add_systems(Update, OceanCamera::ocean_follow_camera);
+        app.add_systems(
+            Update,
+            (OceanCamera::ocean_follow_camera, update_sdf_from_heightmap),
+        );
 
         // Sync ocean params and shore params to materials every frame
         app.add_systems(

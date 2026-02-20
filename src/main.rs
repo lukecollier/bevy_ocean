@@ -10,12 +10,12 @@ use bevy::feathers::{
 use bevy::log::LogPlugin;
 use bevy::prelude::*;
 use bevy::ui_widgets::{SliderPrecision, SliderStep, ValueChange, observe, slider_self_update};
-use bevy_flycam::PlayerPlugin;
+use bevy::camera_controller::free_camera::{FreeCamera, FreeCameraPlugin};
 use bevy_rand::{plugin::EntropyPlugin, prelude::WyRand};
 
 use bevy_ocean::cloud_plugin::CloudPlugin;
 use bevy_ocean::day_night_plugin::{DayNightCyclePlugin, SunDirectionControl};
-use bevy_ocean::ocean_plugin::{OceanParams, OceanPlugin};
+use bevy_ocean::ocean_plugin::{OceanCamera, OceanParams, OceanPlugin};
 use bevy_ocean::sky_plugin::SkyPlugin;
 
 fn main() -> AppExit {
@@ -25,18 +25,31 @@ fn main() -> AppExit {
             level: bevy::log::Level::INFO,
             ..Default::default()
         }))
-        .add_plugins(PlayerPlugin)
+        .add_plugins(FreeCameraPlugin)
         .add_plugins(EntropyPlugin::<WyRand>::default())
         .add_plugins(OceanPlugin::default())
         .add_plugins(SkyPlugin)
         .add_plugins(FrameTimeDiagnosticsPlugin::default())
         .add_plugins(FpsOverlayPlugin::default())
-        // .add_plugins(CloudPlugin)
+        .add_plugins(CloudPlugin)
         .add_plugins(DayNightCyclePlugin::new(60.0 * 60.0))
         .insert_resource(UiTheme(create_dark_theme()))
         .add_plugins(FeathersPlugins)
-        .add_systems(Startup, startup_ui)
+        .add_systems(Startup, (startup_ui, startup_camera))
         .run()
+}
+
+fn startup_camera(mut commands: Commands) {
+    commands.spawn((
+        Camera3d::default(),
+        Transform::from_xyz(0.0, 64.0, 0.0),
+        OceanCamera,
+        FreeCamera {
+            walk_speed: 100.0,
+            run_speed: 300.0,
+            ..default()
+        },
+    ));
 }
 
 fn startup_ui(

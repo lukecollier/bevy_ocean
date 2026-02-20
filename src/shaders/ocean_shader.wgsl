@@ -111,23 +111,34 @@ const GRAVITY: f32 = 9.81;
 
 fn analytical_sdf(world_xz: vec2<f32>) -> f32 {
     let uv = (world_xz - shore.sdf_origin) / shore.sdf_extent;
-    let uv_dist = textureSampleLevel(t_sdf, s_sdf, uv, 0.0).r;
     let world_scale = max(shore.sdf_extent.x, shore.sdf_extent.y);
-    return uv_dist * world_scale;
+
+    // If outside texture bounds, sample at the nearest edge and add the
+    // extra world-space distance from the edge to the sample point.
+    let clamped_uv = clamp(uv, vec2(0.0), vec2(1.0));
+    let uv_dist = textureSampleLevel(t_sdf, s_sdf, clamped_uv, 0.0).r;
+    let edge_offset = (uv - clamped_uv) * shore.sdf_extent;
+    let extra_dist = length(edge_offset);
+
+    return uv_dist * world_scale + extra_dist;
 }
 
-// Fade factor based on inscribed circle within the SDF texture.
-// Returns 1.0 inside 95% of the radius, fades to 0.0 at 100%.
+// Fade factor based on UV bounds of the SDF texture.
+// Returns 1.0 inside 90% of the texture, fades to 0.0 at the edges.
+// Uses rectangular bounds so corners aren't wasted.
 fn sdf_texture_fade(world_xz: vec2<f32>) -> f32 {
-    let center = shore.sdf_origin + shore.sdf_extent * 0.5;
-    let dist_from_center = length(world_xz - center);
-    let radius = min(shore.sdf_extent.x, shore.sdf_extent.y) * 0.5;
-    return 1.0 - smoothstep(radius * 0.95, radius, dist_from_center);
+    let uv = (world_xz - shore.sdf_origin) / shore.sdf_extent;
+    // Fade near each edge: 0.0 at edge, 1.0 at 10% inward
+    let fade_x = min(smoothstep(0.0, 0.1, uv.x), smoothstep(1.0, 0.9, uv.x));
+    let fade_y = min(smoothstep(0.0, 0.1, uv.y), smoothstep(1.0, 0.9, uv.y));
+    return fade_x * fade_y;
 }
 
 fn analytical_sdf_gradient(world_xz: vec2<f32>) -> vec2<f32> {
-    // Central differences: scale eps with texel size for smooth gradients
-    let eps = max(1.0, shore.sdf_extent.x / 256.0);
+    // Central differences: use a wide kernel to smooth out per-texel staircase
+    // artifacts from the discrete coastline boundary in the SDF.
+    // ~16 texels wide averages over enough boundary pixels for a smooth normal.
+    let eps = max(1.0, shore.sdf_extent.x / 64.0);
     let dx = analytical_sdf(world_xz + vec2(eps, 0.0)) - analytical_sdf(world_xz - vec2(eps, 0.0));
     let dy = analytical_sdf(world_xz + vec2(0.0, eps)) - analytical_sdf(world_xz - vec2(0.0, eps));
     let g = vec2(dx, dy);
@@ -179,6 +190,31 @@ fn fbm3(p: vec2<f32>) -> f32 {
 // shore-approaching direction as depth decreases.  Waves break and dissipate
 // near the shoreline (amplitude → 0 at depth = 0).
 
+// Compute the refracted wave direction: starts from toward-shore and adds a
+// swell bias that grows with depth. The swell deviation is clamped so waves
+// always approach the coast — never perpendicular or away from it.
+fn refracted_wave_dir(sdf_grad: vec2<f32>, depth: f32) -> vec2<f32> {
+    let toward_shore = -sdf_grad;
+    let swell = normalize(shore.swell_direction);
+
+    // Swell influence grows with depth (0 at shore, 1 in deep water)
+    let swell_influence = smoothstep(0.0, shore.max_depth * 0.5, depth);
+
+    // Angle from toward_shore to swell
+    let shore_angle = atan2(toward_shore.y, toward_shore.x);
+    let swell_angle = atan2(swell.y, swell.x);
+    var delta = swell_angle - shore_angle;
+    if (delta > PI) { delta -= 2.0 * PI; }
+    if (delta < -PI) { delta += 2.0 * PI; }
+
+    // Clamp: swell can only deviate wave direction by up to 45° from shore-normal
+    let max_deviation = PI * 0.25;
+    delta = clamp(delta, -max_deviation, max_deviation);
+
+    let blended_angle = shore_angle + delta * swell_influence;
+    return vec2(cos(blended_angle), sin(blended_angle));
+}
+
 // Shoaling + breaking envelope.
 // Waves shoal (amplitude grows) in intermediate depths, then break and
 // dissipate as depth approaches 0.  Returns a multiplier on amplitude.
@@ -199,7 +235,6 @@ fn shore_wave_displacement(
     view_dist: f32,
 ) -> vec4<f32> {
     var disp = vec3(0.0);
-    let toward_shore = -sdf_grad;
     let Q = shore.gerstner_steepness;
     let num_waves = i32(shore.gerstner_num_waves);
 
@@ -213,6 +248,9 @@ fn shore_wave_displacement(
         noisy_depth = max(depth, 0.1);
     }
     let envelope = shoal_and_break(noisy_depth);
+
+    // Refracted wave direction: swell in deep water, SDF gradient near shore
+    let toward_shore = refracted_wave_dir(sdf_grad, noisy_depth);
 
     // Spatial amplitude variation — skip noise at distance
     var amp_variation: f32;
@@ -313,7 +351,6 @@ fn shore_wave_normal(
     var dydx = 0.0;
     var dydz = 0.0;
     let num_waves = i32(shore.gerstner_num_waves);
-    let toward_shore = -sdf_grad;
 
     // Noisy depth (must match displacement)
     // Skip expensive fbm3 at distance
@@ -325,6 +362,9 @@ fn shore_wave_normal(
         noisy_depth = max(depth, 0.1);
     }
     let envelope = shoal_and_break(noisy_depth);
+
+    // Refracted wave direction (must match displacement)
+    let toward_shore = refracted_wave_dir(sdf_grad, noisy_depth);
 
     // Must match displacement
     var amp_variation: f32;
@@ -402,7 +442,6 @@ fn shore_gerstner_jacobian(
     world_xz: vec2<f32>,
     depth: f32,
 ) -> vec2<f32> {
-    let toward_shore = -sdf_grad;
     let Q = shore.gerstner_steepness;
     let num_waves = i32(shore.gerstner_num_waves);
 
@@ -410,6 +449,9 @@ fn shore_gerstner_jacobian(
     let depth_noise = (fbm3(world_xz * 0.05) - 0.5) * shore.shore_foam_distance;
     let noisy_depth = max(depth + depth_noise, 0.1);
     let envelope = shoal_and_break(noisy_depth);
+
+    // Refracted wave direction (must match displacement)
+    let toward_shore = refracted_wave_dir(sdf_grad, noisy_depth);
 
     let amp_variation = value_noise(world_xz * 0.01) * 0.8 + 0.2;
 
@@ -517,7 +559,9 @@ fn vertex(in: Vertex) -> OceanVertexOutput {
     let displacement_mip_levels = f32(textureNumLevels(t_displacements));
 
     var total_displacement = vec3(0.);
+    var fine_displacement = vec3(0.); // Fine cascade displacement kept in shore zone
     var jacobian = 0.;
+    let fine_scale_threshold = 50.0;
     // Sample displacement for all cascades
     for (var layer = 0u; layer < NUMBER_OF_CASCADES; layer++) {
       // Distance thresholds for including cascades (lod_cutoff of 0 means always include)
@@ -532,7 +576,12 @@ fn vertex(in: Vertex) -> OceanVertexOutput {
         // Calculate UVs from ORIGINAL world position (before displacement)
         let uv = original_xz / cascade_param.length_scale;
         let d0 = textureSampleLevel(t_displacements, s_ocean, uv, layer, displacement_lod_level);
-        total_displacement = total_displacement + d0.xyz * lod_c0;
+        let cascade_disp = d0.xyz * lod_c0;
+        total_displacement = total_displacement + cascade_disp;
+        // Track fine cascade separately — kept in shore zone for surface texture
+        if (cascade_param.length_scale < fine_scale_threshold) {
+            fine_displacement = fine_displacement + cascade_disp;
+        }
         jacobian = jacobian + d0.w * cascade_param.jacobian_strength;
       }
     }
@@ -571,15 +620,20 @@ fn vertex(in: Vertex) -> OceanVertexOutput {
             let shore_result = shore_wave_displacement(grad, shore.gerstner_amplitude, original_xz, depth, view_dist);
             let shore_disp = shore_result.xyz;
             shore_wave_h = shore_result.w; // Jacobian from Gerstner waves
-            // FFT vertical stays for surface texture; horizontal goes to 0
-            // to prevent FFT choppiness fighting shore-ward Gerstner motion
+            // FFT large cascades: vertical attenuates, horizontal goes to 0
+            // to prevent FFT choppiness fighting shore-ward Gerstner motion.
+            // Fine cascade (10m) kept — adds surface texture without directional conflict.
+            let large_disp = total_displacement - fine_displacement;
             let fft_v_atten = mix(1.0, shore.shore_foam_band_freq, shore_blend);
-            let fft_atten_disp = vec3(
-                total_displacement.x * (1.0 - shore_blend),
-                total_displacement.y * fft_v_atten,
-                total_displacement.z * (1.0 - shore_blend)
+            let fft_large_atten = vec3(
+                large_disp.x * (1.0 - shore_blend),
+                large_disp.y * fft_v_atten,
+                large_disp.z * (1.0 - shore_blend)
             );
-            blended_displacement = fft_atten_disp + shore_disp * shore_blend;
+            // Fine cascade stays at reduced but visible level in shore zone
+            let fine_shore_strength = 0.5;
+            let fine_atten = mix(1.0, fine_shore_strength, shore_blend);
+            blended_displacement = fft_large_atten + fine_displacement * fine_atten + shore_disp * shore_blend;
         }
     }
 
@@ -606,6 +660,7 @@ const DEBUG_JACOBIAN: bool = false;
 const DEBUG_FOAM_TEXTURE: bool = false;
 const DEBUG_DISPLACEMENT: bool = false;  // Visualize raw displacement values per cascade
 const DEBUG_SDF: bool = false;           // Visualize SDF values and blend zones
+const DEBUG_SDF_GRADIENT: bool = false;  // Visualize SDF gradient direction (wave travel dir)
 // PBR helper functions
 fn distribution_ggx(n: vec3<f32>, h: vec3<f32>, roughness: f32) -> f32 {
     let a = roughness * roughness;
@@ -686,8 +741,11 @@ fn fragment(mesh: OceanVertexOutput) -> @location(0) vec4<f32> {
       let deriv_lod_level = clamp(log2(normalized_distance), 0.0, t_derivs_miplevels);
       let deriv = textureSampleLevel(t_derivatives, s_ocean, uv, layer, deriv_lod_level);
 
-      // FFT derivatives attenuate in shore zone but retain a minimum contribution
-      let fft_deriv_weight = mix(1.0, shore.shore_foam_band_freq, mesh.shore_blend);
+      // FFT derivatives in shore zone: large cascades attenuate (fight Gerstner shape)
+      // but fine cascade keeps full contribution for surface detail/ripples
+      let fine_scale_threshold = 50.0;
+      let is_fine = step(cascade_param.length_scale, fine_scale_threshold); // 1.0 if fine, 0.0 if large
+      let fft_deriv_weight = mix(mix(1.0, shore.shore_foam_band_freq, mesh.shore_blend), 1.0, is_fine);
       blended_deriv = blended_deriv + deriv * lod_c * fft_deriv_weight;
 
       // Combine persistent foam from cascades (lod_cutoff of 0 means always include)
@@ -929,6 +987,14 @@ fn fragment(mesh: OceanVertexOutput) -> @location(0) vec4<f32> {
           debug_color.g = saturate(sdf_val * 2.0);  // Water distance
       }
       debug_color.b = mesh.shore_blend; // Blend zone visualization
+      return vec4(debug_color, 1.0);
+    }
+
+    if (DEBUG_SDF_GRADIENT) {
+      let grad = analytical_sdf_gradient(mesh.original_xz);
+      // Encode gradient direction as color: R = grad.x mapped 0-1, G = grad.y mapped 0-1
+      // Uniform gradient = uniform color, artifacts = color noise/banding
+      let debug_color = vec3(grad.x * 0.5 + 0.5, grad.y * 0.5 + 0.5, mesh.shore_blend);
       return vec4(debug_color, 1.0);
     }
 
